@@ -15,11 +15,11 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_time::{Delay, Timer};
 
 use embedded_graphics::image::{Image};
-use embedded_graphics::mono_font::ascii::FONT_10X20;
-use embedded_graphics::mono_font::MonoTextStyle;
+// use embedded_graphics::mono_font::ascii::FONT_10X20;
+// use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
+// use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
 use embedded_graphics::text::Text;
 use mipidsi::models::ST7789;
 use mipidsi::options::{Orientation, Rotation};
@@ -56,11 +56,10 @@ async fn main(_spawner: Spawner) {
     display_config.phase = spi::Phase::CaptureOnSecondTransition;
     display_config.polarity = spi::Polarity::IdleHigh;
 
-    let spi = Spi::new_blocking(p.SPI1, clk, mosi, miso, display_config.clone()); // touch_config.clone());
+    let spi = Spi::new(p.SPI1, clk, mosi, miso, p.DMA_CH0, p.DMA_CH1, display_config.clone());
     let spi_bus: Mutex<NoopRawMutex, _> = Mutex::new(RefCell::new(spi));
-
-    let display_spi = SpiDeviceWithConfig::new(&spi_bus, Output::new(display_cs, Level::High), display_config);
-
+    let display_spi = 
+        SpiDeviceWithConfig::new(&spi_bus, Output::new(display_cs, Level::High), display_config);
 
     // dcx: 0 = command, 1 = data
     let dcx = Output::new(dcx, Level::Low);
@@ -92,63 +91,32 @@ async fn main(_spawner: Spawner) {
       (DISPLAY_HEIGHT - img_size.height as i32)/2 );
     let img1 = Image::new(&qoi, img_inset_point);
 
+    // create a three-frame animation sequence of image translations
+    let back_pt = Point::new(-20, -5);
+    let forth_pt = Point::new(20, 5);
+    let img0 = img1.translate(back_pt);
+    let img2 = img1.translate(forth_pt);
+    let img_array = [img0, img1, img2];
+    let mut img_idx = 0;
+
     let mut led = Output::new(p.PIN_25, Level::Low);
 
-    // initialize the background fill rectangle (for wipes)
-    let fill_rect = Rectangle::new(Point::new(0, 0), 
-    Size::new(DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap()) )
-    .into_styled(
-        PrimitiveStyleBuilder::new()
-            .stroke_width(2)
-            .stroke_color(Rgb565::RED)
-            .fill_color(Rgb565::CSS_BLUE_VIOLET)
-            .build(),
-    );
-
-
     info!("Config done");
-
-    fill_rect.draw(&mut display.color_converted()).unwrap();
-
-    let style = MonoTextStyle::new(&FONT_10X20, Rgb565::GREEN);
-    Text::new(
-        "FUBARN",
-        Point::new(5, 40),
-        style,
-    )
-    .draw(&mut display)
-    .unwrap();
 
     // Enable LCD backlight
     lcd_bl.set_high();
 
-    // create a three-frame animation sequence of image translations
-    let back_pt = Point::new(-10, -5);
-    let forth_pt = Point::new(10, 5);
-    let img0 = img1.translate(back_pt);
-    let img2 = img1.translate(forth_pt);
 
     loop {
-        // Timer::after_millis(250).await;
         led.set_high();
-        // lcd_bl.set_high();
+        if img_idx == 0 {
+            display.clear(Rgb565::BLACK).unwrap();
+        }
 
-        fill_rect.draw(&mut display.color_converted()).unwrap();
-
-        img0.draw(&mut display.color_converted()).unwrap(); 
-        // bg_img.translate_mut(forth_pt);
-        // let _ = bg_img.draw(&mut display.color_converted()).unwrap(); 
-
-        img1.draw(&mut display.color_converted()).unwrap(); 
-        // info!("led off!");
-        // lcd_bl.set_low();
-        // fill_rect.draw(&mut display.color_converted()).unwrap();
-        // bg_img.translate_mut(back_pt);
-        img2.draw(&mut display.color_converted()).unwrap(); 
+        img_array[img_idx].draw(&mut display.color_converted()).unwrap(); 
+        img_idx = (img_idx + 1) % 3;
 
         led.set_low();
-
-        // Timer::after_millis(250).await;
     }
 }
 
