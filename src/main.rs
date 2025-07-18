@@ -15,12 +15,14 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_time::{Delay, Timer};
 
 use embedded_graphics::image::{Image};
-// use embedded_graphics::mono_font::ascii::FONT_10X20;
-// use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
-// use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
-use embedded_graphics::text::Text;
+
+// use lcd_async::models::ST7789;
+// use lcd_async::options::{Orientation, Rotation};
+// use lcd_async::Builder;
+// use lcd_async::options::ColorInversion;
+
 use mipidsi::models::ST7789;
 use mipidsi::options::{Orientation, Rotation};
 use mipidsi::Builder;
