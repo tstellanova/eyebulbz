@@ -85,7 +85,7 @@ async fn main(_spawner: Spawner) {
     display.clear(Rgb565::BLACK).unwrap();
 
     let img_data = include_bytes!("../img/240_dim_fleur.qoi");
-    //info!("img_data.len(): {} ", img_data.len());
+
     let qoi = Qoi::new(img_data).unwrap();
     let img_size = qoi.size();
     let img_inset_point = Point::new(
@@ -94,8 +94,8 @@ async fn main(_spawner: Spawner) {
     let img1 = Image::new(&qoi, img_inset_point);
 
     // create a three-frame animation sequence of image translations
-    let back_pt = Point::new(-20, -5);
-    let forth_pt = Point::new(20, 5);
+    let back_pt = Point::new(-10, 0);
+    let forth_pt = Point::new(10, 0);
     let img0 = img1.translate(back_pt);
     let img2 = img1.translate(forth_pt);
     let img_array = [img0, img1, img2];
@@ -111,9 +111,9 @@ async fn main(_spawner: Spawner) {
 
     loop {
         led.set_high();
-        if img_idx == 0 {
-            display.clear(Rgb565::BLACK).unwrap();
-        }
+        // if img_idx == 0 {
+        //     display.clear(Rgb565::BLACK).unwrap();
+        // }
 
         img_array[img_idx].draw(&mut display.color_converted()).unwrap(); 
         img_idx = (img_idx + 1) % 3;
