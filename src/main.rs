@@ -47,7 +47,7 @@ async fn main(_spawner: Spawner) {
     let rst = p.PIN_15;
     let bl = p.PIN_13;
     let miso = p.PIN_12;
-    let mosi: embassy_rp::peripherals::PIN_11 = p.PIN_11;
+    let mosi   = p.PIN_11;
     let clk = p.PIN_10;
     let display_cs = p.PIN_9;
     let dcx = p.PIN_8;
