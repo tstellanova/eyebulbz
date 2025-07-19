@@ -12,7 +12,7 @@ use embassy_rp::spi;
 use embassy_rp::spi::Spi;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
-use embassy_time::{Delay, Timer};
+use embassy_time::{Delay};
 
 use embedded_graphics::image::{Image};
 use embedded_graphics::pixelcolor::Rgb565;
