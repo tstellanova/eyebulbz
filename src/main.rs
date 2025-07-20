@@ -92,18 +92,25 @@ async fn main(_spawner: Spawner) {
 
     let qoi = Qoi::new(img_data).unwrap();
     let img_size = qoi.size();
-    let inset_x:i32 = (DISPLAY_WIDTH - img_size.width as usize).try_into().unwrap() ;
-    let inset_y:i32 = (DISPLAY_HEIGHT - img_size.height as usize).try_into().unwrap() ;
+    let inset_x:i32 = 0;
+    // let inset_x:i32 = (DISPLAY_WIDTH - img_size.width as usize).try_into().unwrap() ;
+    let inset_y:i32 = (DISPLAY_HEIGHT - img_size.height as usize).try_into().unwrap();
     
-    let img_inset_point = Point::new(inset_x/2, inset_y/2);
-    let img1 = Image::new(&qoi, img_inset_point);
+    let img_inset_point = Point::new(inset_x, inset_y/2);
+    let base_img = Image::new(&qoi, img_inset_point);
 
     // create a three-frame animation sequence of image translations
-    let back_pt = Point::new(-10, 0);
-    let forth_pt = Point::new(10, 0);
-    let img0 = img1.translate(back_pt);
-    let img2 = img1.translate(forth_pt);
-    let img_array = [img0, img1, img2];
+    let img_array = [
+        base_img.translate(Point { x: 5, y: 0 }),
+        base_img.translate(Point { x: 15, y: 0 }),
+        base_img.translate(Point { x: 25, y: 0 }),
+        base_img.translate(Point { x: 35, y: 0 }),
+        base_img.translate(Point { x: 45, y: 0 }),
+        base_img.translate(Point { x: 55, y: 0 }),
+        base_img.translate(Point { x: 65, y: 0 }),
+        base_img.translate(Point { x: 75, y: 0 }),
+    ];
+
     let mut img_idx = 0;
 
     let mut led = Output::new(p.PIN_25, Level::Low);
@@ -125,7 +132,7 @@ async fn main(_spawner: Spawner) {
         raw_fb.clear(Rgb565::BLACK).unwrap();
         
         img_array[img_idx].draw(&mut raw_fb.color_converted()).unwrap(); 
-        img_idx = (img_idx + 1) % 3;
+        img_idx = (img_idx + 1) % img_array.len();
 
         // Send the framebuffer data to the display
         display
