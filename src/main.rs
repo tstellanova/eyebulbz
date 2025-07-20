@@ -93,7 +93,6 @@ async fn main(_spawner: Spawner) {
     let qoi = Qoi::new(img_data).unwrap();
     let img_size = qoi.size();
     let inset_x:i32 = 0;
-    // let inset_x:i32 = (DISPLAY_WIDTH - img_size.width as usize).try_into().unwrap() ;
     let inset_y:i32 = (DISPLAY_HEIGHT - img_size.height as usize).try_into().unwrap();
     
     let img_inset_point = Point::new(inset_x, inset_y/2);
@@ -124,7 +123,7 @@ async fn main(_spawner: Spawner) {
     loop {
         led.set_high();
 
-        // Create a framebuffer for drawing
+        // Create a framebuffer for drawing the current frame 
         let mut raw_fb =
             RawFrameBuf::<Rgb565, _>::new(frame_buffer.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
