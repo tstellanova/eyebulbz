@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-cortex-m = { version = "0.7.6", features = ["inline-asm"] }
+cortex-m = { version = "0.7.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7.5"
 
 defmt = "1.0.1"
@@ -18,16 +18,12 @@ embassy-time = { version = "0.4.0",  features = ["defmt", "defmt-timestamp-uptim
 embassy-rp = { version = "0.6.0",  features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
 
 embedded-graphics = "0.8.1"
-embedded-hal-async = "1.0.0"
-embedded-hal = "1.0"
-
-mipidsi = "0.8.0"
-display-interface-spi = "0.5.0"
-display-interface = "0.5.0"
+lcd-async = "0.1.1"
 
 tinyqoi = "0.2.0"
 embedded-graphics-core = "0.4.0"
-#lcd-async = "0.1.1"
+portable-atomic = { version = "1.11.1", features = ["critical-section"] }
+static_cell = { version = "2.1.1" }
 
 [profile.release]
 lto = true
