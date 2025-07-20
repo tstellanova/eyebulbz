@@ -11,9 +11,13 @@ use embassy_rp::spi::Spi;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Delay};
 
-use embedded_graphics::image::{Image};
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
+
+use embedded_graphics::{
+    prelude::*,
+    image::{Image},
+    pixelcolor::Rgb565,
+    primitives::{Circle, Primitive, PrimitiveStyle, Triangle, Ellipse},
+};
 
 use static_cell::StaticCell;
 
@@ -35,7 +39,7 @@ const DISPLAY_FREQ: u32 = 64_000_000;
 const DISPLAY_WIDTH: usize = 320;
 const DISPLAY_HEIGHT: usize = 240;
 const PIXEL_SIZE: usize = 2; // RGB565 = 2 bytes per pixel
-const FRAME_SIZE_BYTES: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT  * PIXEL_SIZE;
+const FRAME_SIZE_BYTES: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT * PIXEL_SIZE;
 static FRAME_BUFFER: StaticCell<[u8; FRAME_SIZE_BYTES]> = StaticCell::new();
 
 
@@ -91,6 +95,7 @@ async fn main(_spawner: Spawner) {
     let img_data = include_bytes!("../img/240_dim_fleur.qoi");
 
     let qoi = Qoi::new(img_data).unwrap();
+
     let img_size = qoi.size();
     let inset_x:i32 = 0;
     let inset_y:i32 = (DISPLAY_HEIGHT - img_size.height as usize).try_into().unwrap();
@@ -108,6 +113,8 @@ async fn main(_spawner: Spawner) {
         base_img.translate(Point { x: 55, y: 0 }),
         base_img.translate(Point { x: 65, y: 0 }),
         base_img.translate(Point { x: 75, y: 0 }),
+        base_img.translate(Point { x: 85, y: 0 }),
+        base_img.translate(Point { x: 95, y: 0 }),
     ];
 
     let mut img_idx = 0;
@@ -123,15 +130,20 @@ async fn main(_spawner: Spawner) {
     loop {
         led.set_high();
 
-        // Create a framebuffer for drawing the current frame 
-        let mut raw_fb =
-            RawFrameBuf::<Rgb565, _>::new(frame_buffer.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        {
+            // Create a framebuffer for drawing the current frame 
+            let mut raw_fb =
+                RawFrameBuf::<Rgb565, _>::new(frame_buffer.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
-        // Clear the framebuffer to black
-        raw_fb.clear(Rgb565::BLACK).unwrap();
-        
-        img_array[img_idx].draw(&mut raw_fb.color_converted()).unwrap(); 
-        img_idx = (img_idx + 1) % img_array.len();
+            // Clear the framebuffer to black
+            raw_fb.clear(Rgb565::BLACK).unwrap();
+            
+            // dump the current image into the buffer
+            img_array[img_idx].draw(&mut raw_fb.color_converted()).unwrap(); 
+            img_idx = (img_idx + 1) % img_array.len();
+
+            draw_eyeball(&mut raw_fb).unwrap();
+        }
 
         // Send the framebuffer data to the display
         display
@@ -143,5 +155,42 @@ async fn main(_spawner: Spawner) {
 
         led.set_low();
     }
+}
+
+
+
+fn draw_eyeball<T>(display: &mut T) -> Result<(), T::Error>
+where
+    T: DrawTarget<Color = Rgb565>,
+{
+    let left_pupil_inset = 20;
+    let top_eye_inset = 30;
+    Ellipse::new(Point::new(0, 10), Size::new(80, 40) )
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+            .draw(display)?;
+    
+    Circle::new(Point::new(left_pupil_inset-(30/2), top_eye_inset-(30/2)), 30)
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::RED))
+        .draw(display)?;
+
+    Circle::new(Point::new(left_pupil_inset-(20/2), top_eye_inset-(20/2)), 20)
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .draw(display)?;
+
+    let x_off:i32 = (DISPLAY_WIDTH - 80).try_into().unwrap();
+    Ellipse::new(Point::new(x_off, 10), Size::new(80, 40) )
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+            .draw(display)?;
+    
+    Circle::new(Point::new(x_off+20-(30/2), top_eye_inset-(30/2)), 30)
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::RED))
+        .draw(display)?;
+
+    Circle::new(Point::new(x_off+20-(20/2), top_eye_inset-(20/2)), 20)
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .draw(display)?;
+
+
+    Ok(())
 }
 
