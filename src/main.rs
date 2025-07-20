@@ -127,7 +127,6 @@ async fn main(_spawner: Spawner) {
         img_array[img_idx].draw(&mut raw_fb.color_converted()).unwrap(); 
         img_idx = (img_idx + 1) % 3;
 
-        lcd_bl.set_low();
         // Send the framebuffer data to the display
         display
             .show_raw_data(0, 0, 
@@ -135,7 +134,6 @@ async fn main(_spawner: Spawner) {
                 frame_buffer)
             .await
             .unwrap();
-        lcd_bl.set_high();
 
         led.set_low();
     }
