@@ -9,7 +9,7 @@ use embassy_rp::gpio::{Level, Output};
 use embassy_rp::spi::{self, Async};
 use embassy_rp::spi::Spi;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
-use embassy_time::{Delay};
+use embassy_time::{Delay, Timer};
 
 
 use embedded_graphics::{
@@ -49,6 +49,8 @@ static FRAME_BUFFER: StaticCell<[u8; FRAME_SIZE_BYTES]> = StaticCell::new();
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("Start Config");
+
+    let mut led = Output::new(p.PIN_25, Level::Low);
 
     // LCD display 0: ST7789 pins
     let bl0 = p.PIN_8; // SPI1 RX
@@ -98,6 +100,7 @@ async fn main(_spawner: Spawner) {
         .reset_pin(rst0_out)
         .display_size(240, 320)
         .orientation(Orientation::new().rotate(Rotation::Deg90).flip_horizontal())
+        // .orientation(Orientation::new().rotate(Rotation::Deg90))
         .invert_colors(ColorInversion::Inverted)
         .init(&mut Delay)
         .await
@@ -137,34 +140,44 @@ async fn main(_spawner: Spawner) {
     // Initialize frame buffer
     let frame_buffer = FRAME_BUFFER.init([0; FRAME_SIZE_BYTES]);
 
-    let img_data = include_bytes!("../img/240_dim_fleur.qoi");
+    // let img_data = include_bytes!("../img/240_dim_fleur.qoi");
+    let eyeframe0 = include_bytes!("../img/calm-eye.qoi");
+    let eyeframe1 = include_bytes!("../img/love-eye.qoi");
+    let eyeframe2 = include_bytes!("../img/joy-eye.qoi");
 
-    let qoi = Qoi::new(img_data).unwrap();
+    let qoi1 = Qoi::new(eyeframe0).unwrap();
+    let qoi2 = Qoi::new(eyeframe1).unwrap();
+    let qoi3 = Qoi::new(eyeframe2).unwrap();
 
-    let img_size = qoi.size();
-    let inset_x:i32 = 0;
+    let img_size = qoi1.size();
+    let inset_x:i32 = (DISPLAY_WIDTH - img_size.width as usize).try_into().unwrap();
     let inset_y:i32 = (DISPLAY_HEIGHT - img_size.height as usize).try_into().unwrap();
-    
-    let img_inset_point = Point::new(inset_x, inset_y/2);
-    let base_img = Image::new(&qoi, img_inset_point);
+    let img_inset_point = Point::new(inset_x/2, inset_y/2);
+    let img1: Image<'_, Qoi<'_>> = Image::new(&qoi1, img_inset_point);
+    let img2: Image<'_, Qoi<'_>> = Image::new(&qoi2, img_inset_point);
+    let img3: Image<'_, Qoi<'_>> = Image::new(&qoi3, img_inset_point);
+    let img4: Image<'_, Qoi<'_>> = Image::new(&qoi1, img_inset_point);
 
     // create a three-frame animation sequence of image translations
-    let img_array = [
-        base_img.translate(Point { x: 5, y: 0 }),
-        base_img.translate(Point { x: 15, y: 0 }),
-        base_img.translate(Point { x: 25, y: 0 }),
-        base_img.translate(Point { x: 35, y: 0 }),
-        base_img.translate(Point { x: 45, y: 0 }),
-        base_img.translate(Point { x: 55, y: 0 }),
-        base_img.translate(Point { x: 65, y: 0 }),
-        base_img.translate(Point { x: 75, y: 0 }),
-        base_img.translate(Point { x: 85, y: 0 }),
-        base_img.translate(Point { x: 95, y: 0 }),
-    ];
+    // let img_array = [
+    //     base_img.translate(Point { x: 5, y: 0 }),
+    //     base_img.translate(Point { x: 15, y: 0 }),
+    //     base_img.translate(Point { x: 25, y: 0 }),
+    //     base_img.translate(Point { x: 35, y: 0 }),
+    //     base_img.translate(Point { x: 45, y: 0 }),
+    //     base_img.translate(Point { x: 55, y: 0 }),
+    //     base_img.translate(Point { x: 65, y: 0 }),
+    //     base_img.translate(Point { x: 75, y: 0 }),
+    //     base_img.translate(Point { x: 85, y: 0 }),
+    //     base_img.translate(Point { x: 95, y: 0 }),
+    // ];
+
+
+    let img_array = [ img1, img2, img3, img4];
+
 
     let mut img_idx = 0;
 
-    let mut led = Output::new(p.PIN_25, Level::Low);
 
     info!("Config done");
 
@@ -174,6 +187,7 @@ async fn main(_spawner: Spawner) {
 
 
     loop {
+
         led.set_high();
 
         {
@@ -188,7 +202,7 @@ async fn main(_spawner: Spawner) {
             img_array[img_idx].draw(&mut raw_fb.color_converted()).unwrap(); 
             img_idx = (img_idx + 1) % img_array.len();
 
-            draw_eyeball(&mut raw_fb).unwrap();
+            // draw_eyeball(&mut raw_fb).unwrap();
         }
 
         // Send the framebuffer data to the display
@@ -207,7 +221,8 @@ async fn main(_spawner: Spawner) {
             .await
             .unwrap();
 
-        
+        let frame_delay: u64 = (img_idx * 100 + 50).try_into().unwrap();
+        Timer::after_millis(frame_delay).await;
 
         led.set_low();
     }
