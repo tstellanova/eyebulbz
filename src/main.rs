@@ -48,33 +48,45 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("Start Config");
 
-    let rst = p.PIN_15;
-    let bl = p.PIN_13;
-    let miso = p.PIN_12;
-    let mosi   = p.PIN_11;
-    let clk = p.PIN_10;
-    let display_cs = p.PIN_9;
-    let dcx = p.PIN_8;
+    // LCD display 0: ST7789 pins
+    let rst0 = p.PIN_7; // SPI0 TX
+    let bl0 = p.PIN_8; // SPI1 RX
+    let miso0 = p.PIN_4; // SPI0 RX
+    let mosi0 = p.PIN_3; // SPI0 TX
+    let sck0 = p.PIN_2; // SPI0 SCK
+    let cs0 = p.PIN_5; // SPI0 CSN
+    let dcx0 = p.PIN_6; // SPI0 SCK
 
+
+    // LCD display 1: ST7789 pins
+    let rst1 = p.PIN_15; // SPI1 TX
+    let bl1 = p.PIN_13; // SPI1 CSN
+    let miso1 = p.PIN_12; // SPI1 RX
+    let mosi1   = p.PIN_11; // SPI1 TX
+    let sck1 = p.PIN_10; // SPI1 SCK
+    let cs1 = p.PIN_9; // SPI1 CSN
+    let dcx1 = p.PIN_14; // SPI1 RX
+
+    
     // create SPI
     let mut display_config = spi::Config::default();
     display_config.frequency = DISPLAY_FREQ;
     display_config.phase = spi::Phase::CaptureOnSecondTransition;
     display_config.polarity = spi::Polarity::IdleHigh;
 
-    let spi = Spi::new(p.SPI1, clk, mosi, miso, p.DMA_CH0, p.DMA_CH1, display_config.clone());
+    let spi = Spi::new(p.SPI1, sck1, mosi1, miso1, p.DMA_CH0, p.DMA_CH1, display_config.clone());
 
     // Create shared SPI bus
     static SPI_BUS: StaticCell<Mutex<NoopRawMutex, Spi<'static, embassy_rp::peripherals::SPI1, Async>>> = StaticCell::new();
     let spi_bus = SPI_BUS.init(Mutex::new(spi));
-    let spi_device = SpiDevice::new(spi_bus, Output::new(display_cs, Level::High));
+    let spi_device = SpiDevice::new(spi_bus, Output::new(cs1, Level::High));
 
     // dcx: 0 = command, 1 = data
-    let dcx = Output::new(dcx, Level::Low);
-    let rst = Output::new(rst, Level::Low);
+    let dcx = Output::new(dcx1, Level::Low);
+    let rst = Output::new(rst1, Level::Low);
 
     // LCD backlight -- initially off
-    let mut lcd_bl = Output::new(bl, Level::Low);
+    let mut lcd_bl = Output::new(bl1, Level::Low);
 
     // display interface abstraction from SPI and DC
     let di = SpiInterface::new(spi_device, dcx);
