@@ -22,7 +22,6 @@ use embedded_graphics::{
 use lcd_async::raw_framebuf;
 use static_cell::StaticCell;
 
-use embedded_graphics_transform::FlipX;
 
 use lcd_async::{
     interface::SpiInterface,
@@ -56,7 +55,7 @@ async fn main(_spawner: Spawner) {
     let rst0 = p.PIN_7; // SPI0 TX
     let dcx0 = p.PIN_6; // SPI0 SCK
     let cs0 = p.PIN_5; // SPI0 CSN
-    let miso0 = p.PIN_4; // SPI0 RX
+    let miso0 = p.PIN_4; // SPI0 RX -- unused
     let mosi0 = p.PIN_3; // SPI0 TX
     let sck0 = p.PIN_2; // SPI0 SCK
 
@@ -65,7 +64,7 @@ async fn main(_spawner: Spawner) {
     let rst1 = p.PIN_15; // SPI1 TX
     let dcx1 = p.PIN_14; // SPI1 RX
     let bl1 = p.PIN_13; // SPI1 CSN
-    let miso1 = p.PIN_12; // SPI1 RX
+    let miso1 = p.PIN_12; // SPI1 RX -- unused
     let mosi1 = p.PIN_11; // SPI1 TX
     let sck1 = p.PIN_10; // SPI1 SCK
     let cs1 = p.PIN_9; // SPI1 CSN
@@ -95,16 +94,15 @@ async fn main(_spawner: Spawner) {
     let spi_int0 = SpiInterface::new(spi0_device, dcx0_out);
 
     // Define the display from the display interface and initialize it
-    let mut display0_base = Builder::new(ST7789, spi_int0)
+    let mut display0 = Builder::new(ST7789, spi_int0)
         .reset_pin(rst0_out)
         .display_size(240, 320)
-        .orientation(Orientation::new().rotate(Rotation::Deg90))
+        .orientation(Orientation::new().rotate(Rotation::Deg90).flip_horizontal())
         .invert_colors(ColorInversion::Inverted)
         .init(&mut Delay)
         .await
         .unwrap();
 
-    let mut display0 = FlipX::new(display0_base);
 
     // create SPI1
     let spi1: Spi<'_, embassy_rp::peripherals::SPI1, Async> = 
@@ -171,6 +169,7 @@ async fn main(_spawner: Spawner) {
     info!("Config done");
 
     // Enable LCD backlight
+    bl0_out.set_high();
     bl1_out.set_high();
 
 
@@ -201,7 +200,7 @@ async fn main(_spawner: Spawner) {
                 .await
                 .unwrap();
 
-                display1
+        display1
             .show_raw_data(0, 0, 
                 DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
                 frame_buffer)

@@ -22,7 +22,6 @@ lcd-async = "0.1.1"
 
 tinyqoi = "0.2.0"
 embedded-graphics-core = "0.4.0"
-embedded-graphics-transform = "0.1.0"
 portable-atomic = { version = "1.11.1", features = ["critical-section"] }
 static_cell = { version = "2.1.1" }
 
