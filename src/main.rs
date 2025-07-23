@@ -99,8 +99,7 @@ async fn main(_spawner: Spawner) {
     let mut display0 = Builder::new(ST7789, spi_int0)
         .reset_pin(rst0_out)
         .display_size(240, 320)
-        .orientation(Orientation::new().rotate(Rotation::Deg90).flip_horizontal())
-        // .orientation(Orientation::new().rotate(Rotation::Deg90))
+        .orientation(Orientation::new().rotate(Rotation::Deg270).flip_horizontal())
         .invert_colors(ColorInversion::Inverted)
         .init(&mut Delay)
         .await
