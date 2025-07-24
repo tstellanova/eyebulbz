@@ -15,11 +15,11 @@ use embassy_time::{Delay, Timer};
 use embedded_graphics::{
     prelude::*,
     image::{Image},
-    pixelcolor::Rgb565,
-    primitives::{Circle, Primitive, PrimitiveStyle, Triangle, Ellipse},
+    pixelcolor::{Rgb565},
+    primitives::{Circle, Primitive, PrimitiveStyle, Ellipse, Line},
 };
 
-use lcd_async::raw_framebuf;
+// use lcd_async::raw_framebuf;
 use static_cell::StaticCell;
 
 
@@ -143,38 +143,25 @@ async fn main(_spawner: Spawner) {
     let eyeframe0 = include_bytes!("../img/calm-eye.qoi");
     let eyeframe1 = include_bytes!("../img/love-eye.qoi");
     let eyeframe2 = include_bytes!("../img/joy-eye.qoi");
+    let transp = include_bytes!("../img/eye-frame.qoi");
 
     let qoi1 = Qoi::new(eyeframe0).unwrap();
     let qoi2 = Qoi::new(eyeframe1).unwrap();
     let qoi3 = Qoi::new(eyeframe2).unwrap();
+    let qoi4 = Qoi::new(transp).unwrap();
 
     let img_size = qoi1.size();
     let inset_x:i32 = (DISPLAY_WIDTH - img_size.width as usize).try_into().unwrap();
     let inset_y:i32 = (DISPLAY_HEIGHT - img_size.height as usize).try_into().unwrap();
     let img_inset_point = Point::new(inset_x/2, inset_y/2);
+    let img_no_inset = Point::new(0,0);
     let img1: Image<'_, Qoi<'_>> = Image::new(&qoi1, img_inset_point);
     let img2: Image<'_, Qoi<'_>> = Image::new(&qoi2, img_inset_point);
     let img3: Image<'_, Qoi<'_>> = Image::new(&qoi3, img_inset_point);
-    let img4: Image<'_, Qoi<'_>> = Image::new(&qoi1, img_inset_point);
-
-    // create a three-frame animation sequence of image translations
-    // let img_array = [
-    //     base_img.translate(Point { x: 5, y: 0 }),
-    //     base_img.translate(Point { x: 15, y: 0 }),
-    //     base_img.translate(Point { x: 25, y: 0 }),
-    //     base_img.translate(Point { x: 35, y: 0 }),
-    //     base_img.translate(Point { x: 45, y: 0 }),
-    //     base_img.translate(Point { x: 55, y: 0 }),
-    //     base_img.translate(Point { x: 65, y: 0 }),
-    //     base_img.translate(Point { x: 75, y: 0 }),
-    //     base_img.translate(Point { x: 85, y: 0 }),
-    //     base_img.translate(Point { x: 95, y: 0 }),
-    // ];
+    let img4: Image<'_, Qoi<'_>> = Image::new(&qoi4, img_no_inset);
 
 
     let img_array = [ img1, img2, img3, img4];
-
-
     let mut img_idx = 0;
 
 
@@ -195,13 +182,19 @@ async fn main(_spawner: Spawner) {
                 RawFrameBuf::<Rgb565, _>::new(frame_buffer.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
             // Clear the framebuffer to black
-            raw_fb.clear(Rgb565::BLACK).unwrap();
+            if img_idx == 3 {
+                raw_fb.clear(Rgb565::CSS_MAGENTA).unwrap();
+            }
+            else {
+                raw_fb.clear(Rgb565::BLACK).unwrap();
+            }
             
             // dump the current image into the buffer
             img_array[img_idx].draw(&mut raw_fb.color_converted()).unwrap(); 
             img_idx = (img_idx + 1) % img_array.len();
 
-            // draw_eyeball(&mut raw_fb).unwrap();
+            // overdraw the fancy eye stuff
+            draw_inner_eye(&mut raw_fb).unwrap();
         }
 
         // Send the framebuffer data to the display
@@ -220,43 +213,46 @@ async fn main(_spawner: Spawner) {
             .await
             .unwrap();
 
-        let frame_delay: u64 = (img_idx * 100 + 50).try_into().unwrap();
-        Timer::after_millis(frame_delay).await;
-
+        if img_idx == 0 {
+            Timer::after_millis(2000).await;
+        }
         led.set_low();
     }
 }
 
 
 
-fn draw_eyeball<T>(display: &mut T) -> Result<(), T::Error>
+fn draw_inner_eye<T>(display: &mut T) -> Result<(), T::Error>
 where
     T: DrawTarget<Color = Rgb565>,
-{
-    let left_pupil_inset = 20;
-    let top_eye_inset = 30;
-    Ellipse::new(Point::new(0, 10), Size::new(80, 40) )
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
-            .draw(display)?;
-    
-    Circle::new(Point::new(left_pupil_inset-(30/2), top_eye_inset-(30/2)), 30)
+{   
+    // this line appears vertical onscreen
+    Line::new(Point::new(160, 0), Point::new(160, 240))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 4))
+        .draw(display)?;
+
+    // this line appears horizontal onscreen
+     Line::new(Point::new(0, 120), Point::new(320, 120))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::BLUE, 4))
+        .draw(display)?;
+
+    let pupil_ctr: Point = Point::new(150,160);
+
+    let iris_diam: i32 = 120;
+    let iris_radius: i32 = iris_diam / 2;
+    let iris_radion: i32 = iris_radius.isqrt();
+    let iris_top_left = pupil_ctr - Point::new(iris_radion, iris_radion);
+
+    let pupil_diam = iris_diam / 2;
+    let pupil_radius = iris_radius / 2;
+    let pupil_radion: i32 = pupil_radius.isqrt();
+    let pupil_top_left = pupil_ctr - Point::new(pupil_radion, pupil_radion);
+
+    Circle::new(iris_top_left, iris_diam.try_into().unwrap() )
         .into_styled(PrimitiveStyle::with_fill(Rgb565::RED))
         .draw(display)?;
 
-    Circle::new(Point::new(left_pupil_inset-(20/2), top_eye_inset-(20/2)), 20)
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-        .draw(display)?;
-
-    let x_off:i32 = (DISPLAY_WIDTH - 80).try_into().unwrap();
-    Ellipse::new(Point::new(x_off, 10), Size::new(80, 40) )
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
-            .draw(display)?;
-    
-    Circle::new(Point::new(x_off+20-(30/2), top_eye_inset-(30/2)), 30)
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::RED))
-        .draw(display)?;
-
-    Circle::new(Point::new(x_off+20-(20/2), top_eye_inset-(20/2)), 20)
+    Circle::new(pupil_top_left, pupil_diam.try_into().unwrap() )
         .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
         .draw(display)?;
 
