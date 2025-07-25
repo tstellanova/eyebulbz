@@ -3,25 +3,25 @@
 
 
 use defmt::*;
+use portable_atomic::{AtomicUsize, Ordering};
+
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
-use embassy_executor::Spawner;
-use embassy_rp::gpio::{Level, Output};
-use embassy_rp::spi::{self, Async};
-use embassy_rp::spi::Spi;
+use embassy_executor::{Spawner};
+use embassy_rp:: {
+    gpio::{Input, Level, Output, Pull}, spi::{self, Async, Spi}
+};
+
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Delay, Timer};
-
 
 use embedded_graphics::{
     prelude::*,
     image::{Image},
     pixelcolor::{Rgb565},
-    primitives::{Circle, Primitive, PrimitiveStyle, Ellipse, Line},
+    primitives::{Circle, Primitive, PrimitiveStyle, Line},
 };
 
-// use lcd_async::raw_framebuf;
 use static_cell::StaticCell;
-
 
 use lcd_async::{
     interface::SpiInterface,
@@ -36,6 +36,7 @@ use tinyqoi::Qoi;
 use {defmt_rtt as _, panic_probe as _};
 
 
+const NUM_MODES: usize = 2;
 const DISPLAY_FREQ: u32 = 64_000_000;
 
 const DISPLAY_WIDTH: usize = 320;
@@ -44,12 +45,30 @@ const PIXEL_SIZE: usize = 2; // RGB565 = 2 bytes per pixel
 const FRAME_SIZE_BYTES: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT * PIXEL_SIZE;
 static FRAME_BUFFER: StaticCell<[u8; FRAME_SIZE_BYTES]> = StaticCell::new();
 
+static MODE_SETTING: AtomicUsize = AtomicUsize::new(0);
+
+
+#[embassy_executor::task]
+async fn gpio_task(mut pin: Input<'static>) {
+    loop {
+        let mut mode_val = MODE_SETTING.load(Ordering::Relaxed);
+        pin.wait_for_falling_edge().await;
+        mode_val = (mode_val + 1) % NUM_MODES;
+        MODE_SETTING.store(mode_val, Ordering::Relaxed);
+    }
+}
+
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("Start Config");
 
+    MODE_SETTING.store(0, Ordering::Relaxed);
+
+    let pin = Input::new(p.PIN_22, Pull::Up);
+    unwrap!(spawner.spawn(gpio_task(pin)));
+    
     let mut led = Output::new(p.PIN_25, Level::Low);
 
     // LCD display 0: ST7789 pins
@@ -158,10 +177,10 @@ async fn main(_spawner: Spawner) {
     let img1: Image<'_, Qoi<'_>> = Image::new(&qoi1, img_inset_point);
     let img2: Image<'_, Qoi<'_>> = Image::new(&qoi2, img_inset_point);
     let img3: Image<'_, Qoi<'_>> = Image::new(&qoi3, img_inset_point);
-    let img4: Image<'_, Qoi<'_>> = Image::new(&qoi4, img_no_inset);
+    let eyeframe_img: Image<'_, Qoi<'_>> = Image::new(&qoi4, img_no_inset);
 
 
-    let img_array = [ img1, img2, img3, img4];
+    let img_array = [ img1, img2, img3];
     let mut img_idx = 0;
 
 
@@ -171,10 +190,16 @@ async fn main(_spawner: Spawner) {
     bl0_out.set_high();
     bl1_out.set_high();
 
+   
 
     loop {
 
         led.set_high();
+
+        let mode_val = MODE_SETTING.load(Ordering::Relaxed);
+        if mode_val == 0 {
+            Timer::after_millis(500).await;
+        }
 
         {
             // Create a framebuffer for drawing the current frame 
@@ -182,19 +207,19 @@ async fn main(_spawner: Spawner) {
                 RawFrameBuf::<Rgb565, _>::new(frame_buffer.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
             // Clear the framebuffer to black
-            if img_idx == 3 {
+
+            if mode_val == 1 {
                 raw_fb.clear(Rgb565::CSS_MAGENTA).unwrap();
+                eyeframe_img.draw(&mut raw_fb.color_converted()).unwrap(); 
+                // overdraw the fancy eye stuff
+                draw_inner_eye(&mut raw_fb).unwrap();
             }
             else {
                 raw_fb.clear(Rgb565::BLACK).unwrap();
+                img_array[img_idx].draw(&mut raw_fb.color_converted()).unwrap(); 
+                img_idx = (img_idx + 1) % img_array.len();
             }
-            
-            // dump the current image into the buffer
-            img_array[img_idx].draw(&mut raw_fb.color_converted()).unwrap(); 
-            img_idx = (img_idx + 1) % img_array.len();
 
-            // overdraw the fancy eye stuff
-            draw_inner_eye(&mut raw_fb).unwrap();
         }
 
         // Send the framebuffer data to the display
@@ -213,12 +238,10 @@ async fn main(_spawner: Spawner) {
             .await
             .unwrap();
 
-        if img_idx == 0 {
-            Timer::after_millis(2000).await;
-        }
         led.set_low();
     }
 }
+
 
 
 
@@ -259,4 +282,5 @@ where
 
     Ok(())
 }
+
 
