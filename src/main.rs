@@ -51,7 +51,6 @@ static IRIS_FRAMEBUF: StaticCell<[u8; IRIS_REGION_SIZE_BYTES]> = StaticCell::new
 
 static MODE_SETTING: AtomicUsize = AtomicUsize::new(0);
 
-// type RealDisplayType<T>=lcd_async::Display<SpiInterface<embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice<'static, NoopRawMutex, embassy_rp::spi::Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
 type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
 
 
@@ -174,6 +173,10 @@ async fn main(spawner: Spawner) {
     let iris_diam = 122;
     let pupil_diam = iris_diam / 2;
     let highlight_size = Size::new(26 , 28);
+    let iris_diam_dim: u32 = iris_diam.try_into().unwrap();
+    let iris_radius: i32 = iris_diam / 2;
+    let left_iris_tl = Point::new(left_pupil_ctr.x - iris_radius, left_pupil_ctr.y - iris_radius);
+    let right_iris_tl = Point::new(right_pupil_ctr.x - iris_radius, right_pupil_ctr.y - iris_radius);
 
 
     info!("Config done");
@@ -208,23 +211,31 @@ async fn main(spawner: Spawner) {
     
         //draw left frame
         {
-            let mut _raw_fb = 
-                        RawFrameBuf::<Rgb565, _>::new(iris_frame_buf.as_mut_slice(), IRIS_FRAME_DIM, IRIS_FRAME_DIM);
+            let mut inner_fb = 
+                        RawFrameBuf::<Rgb565, _>::new(iris_frame_buf.as_mut_slice(), 
+                        IRIS_FRAME_DIM, IRIS_FRAME_DIM);
 
-            let mut raw_fb =
-            RawFrameBuf::<Rgb565, _>::new(single_frame_buf.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+            // let mut raw_fb =
+            // RawFrameBuf::<Rgb565, _>::new(single_frame_buf.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
             
             // raw_fb.clear(Rgb565::BLACK).unwrap();
             // eyeframe_left_img.draw(&mut raw_fb.color_converted()).unwrap(); 
             // overdraw the fancy eye stuff
-            draw_one_inner_eye(&mut raw_fb, true, &left_pupil_ctr, iris_diam, pupil_diam, &highlight_size, iris_color).unwrap();
+            draw_one_inner_eye(&mut inner_fb, true, &left_pupil_ctr, iris_diam, pupil_diam, &highlight_size, iris_color).unwrap();
                         
             left_display
-            .show_raw_data(0, 0, 
-                DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
-                single_frame_buf)
+            .show_raw_data(left_iris_tl.x, left_iris_tl.y, 
+                IRIS_FRAME_DIM, IRIS_FRAME_DIM,
+                iris_frame_buf)
             .await
             .unwrap();
+
+            // left_display
+            // .show_raw_data(0, 0, 
+            //     DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
+            //     single_frame_buf)
+            // .await
+            // .unwrap();
         }
 
         // draw right frame
