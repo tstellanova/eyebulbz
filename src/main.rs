@@ -44,9 +44,10 @@ const FRAME_SIZE_BYTES: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT * PIXEL_SIZE;
 type FullFrameBuf = [u8; FRAME_SIZE_BYTES];
 static SINGLE_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 
-const IRIS_FRAME_DIM: usize = 125;
-const IRIS_FRAME_EXTENT: i32 = IRIS_FRAME_DIM as i32;
-const IRIS_REGION_SIZE_BYTES: usize = IRIS_FRAME_DIM * IRIS_FRAME_DIM * PIXEL_SIZE;
+const IRIS_FRAME_WIDTH: usize = 125;
+const IRIS_FRAME_HEIGHT: usize = 125;
+const IRIS_FRAME_EXTENT: i32 = IRIS_FRAME_WIDTH as i32;
+const IRIS_REGION_SIZE_BYTES: usize = IRIS_FRAME_WIDTH * IRIS_FRAME_HEIGHT * PIXEL_SIZE;
 static IRIS_FRAMEBUF: StaticCell<[u8; IRIS_REGION_SIZE_BYTES]> = StaticCell::new();
 
 static MODE_SETTING: AtomicUsize = AtomicUsize::new(0);
@@ -173,11 +174,15 @@ async fn main(spawner: Spawner) {
     let iris_diam = 122;
     let pupil_diam = iris_diam / 2;
     let highlight_size = Size::new(26 , 28);
-    let iris_diam_dim: u32 = iris_diam.try_into().unwrap();
     let iris_radius: i32 = iris_diam / 2;
     let left_iris_tl = Point::new(left_pupil_ctr.x - iris_radius, left_pupil_ctr.y - iris_radius);
     let right_iris_tl = Point::new(right_pupil_ctr.x - iris_radius, right_pupil_ctr.y - iris_radius);
+    let left_inner_pupil_ctr = Point::new(IRIS_FRAME_EXTENT/2, IRIS_FRAME_EXTENT/2);//center in inner frame
 
+    let iris_diam_dim: u32 = iris_diam.try_into().unwrap();
+    let inset_iris_clip_tl = Point::new(left_iris_tl.x, left_iris_tl.y + 25);
+    let left_iris_clip_rect = Rectangle::new(Point::new(0,25), 
+        Size::new(iris_diam_dim+2, iris_diam_dim+2 - 25));
 
     info!("Config done");
 
@@ -205,37 +210,29 @@ async fn main(spawner: Spawner) {
         led.set_high();
         let mode_val = MODE_SETTING.load(Ordering::Relaxed);
 
+        
          let iris_color =
             if mode_val == 0 { Rgb565::CSS_MAGENTA }
             else { iris_colors[loop_count % iris_colors.len()] };
     
-        //draw left frame
+        //draw left inner eyeball
         {
             let mut inner_fb = 
                         RawFrameBuf::<Rgb565, _>::new(iris_frame_buf.as_mut_slice(), 
-                        IRIS_FRAME_DIM, IRIS_FRAME_DIM);
+                        IRIS_FRAME_WIDTH, IRIS_FRAME_HEIGHT);
+            inner_fb.clipped(&left_iris_clip_rect).clear(Rgb565::CSS_DARK_OLIVE_GREEN).unwrap();
 
-            // let mut raw_fb =
-            // RawFrameBuf::<Rgb565, _>::new(single_frame_buf.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
-            
-            // raw_fb.clear(Rgb565::BLACK).unwrap();
-            // eyeframe_left_img.draw(&mut raw_fb.color_converted()).unwrap(); 
             // overdraw the fancy eye stuff
-            draw_one_inner_eye(&mut inner_fb, true, &left_pupil_ctr, iris_diam, pupil_diam, &highlight_size, iris_color).unwrap();
+            draw_one_inner_eye(&mut inner_fb, true, &left_inner_pupil_ctr, iris_diam, pupil_diam, &highlight_size, iris_color).unwrap();
                         
             left_display
-            .show_raw_data(left_iris_tl.x, left_iris_tl.y, 
-                IRIS_FRAME_DIM, IRIS_FRAME_DIM,
+            .show_raw_data(left_iris_tl.x.try_into().unwrap(), 
+            left_iris_tl.y.try_into().unwrap(), 
+                IRIS_FRAME_WIDTH.try_into().unwrap(), 
+                IRIS_FRAME_HEIGHT.try_into().unwrap(), 
                 iris_frame_buf)
             .await
             .unwrap();
-
-            // left_display
-            // .show_raw_data(0, 0, 
-            //     DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
-            //     single_frame_buf)
-            // .await
-            // .unwrap();
         }
 
         // draw right frame
@@ -289,15 +286,15 @@ fn draw_one_inner_eye<T>(
 where
     T: DrawTarget<Color = Rgb565>,
 {   
-    // this line appears vertical onscreen
-    Line::new(Point::new(160, 0), Point::new(160, 240))
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 1))
-        .draw(display)?;
+    // // this line appears vertical onscreen
+    // Line::new(Point::new(160, 0), Point::new(160, 240))
+    //     .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 1))
+    //     .draw(display)?;
 
-    // this line appears horizontal onscreen
-     Line::new(Point::new(0, 120), Point::new(320, 120))
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::BLUE, 1))
-        .draw(display)?;
+    // // this line appears horizontal onscreen
+    //  Line::new(Point::new(0, 120), Point::new(320, 120))
+    //     .into_styled(PrimitiveStyle::with_stroke(Rgb565::BLUE, 1))
+    //     .draw(display)?;
 
     let iris_diam_dim: u32 = iris_diam.try_into().unwrap();
     let iris_radius: i32 = iris_diam / 2;
