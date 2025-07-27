@@ -15,10 +15,7 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Delay, Timer};
 
 use embedded_graphics::{
-    prelude::*,
-    image::{Image},
-    pixelcolor::{Rgb565},
-    primitives::{Circle, Primitive, PrimitiveStyle, Line},
+    image::Image, pixelcolor::Rgb565, prelude::*, primitives::{Circle, Ellipse, Line, Primitive, PrimitiveStyle, Rectangle}
 };
 
 use static_cell::StaticCell;
@@ -43,10 +40,12 @@ const DISPLAY_WIDTH: usize = 320;
 const DISPLAY_HEIGHT: usize = 240;
 const PIXEL_SIZE: usize = 2; // RGB565 = 2 bytes per pixel
 const FRAME_SIZE_BYTES: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT * PIXEL_SIZE;
-static FRAME_BUFFER: StaticCell<[u8; FRAME_SIZE_BYTES]> = StaticCell::new();
+static SINGLE_FRAMEBUF: StaticCell<[u8; FRAME_SIZE_BYTES]> = StaticCell::new();
+
+const IRIS_REGION_SIZE_BYTES: usize = 125 * 125 * PIXEL_SIZE;
+static IRIS_FRAMEBUF: StaticCell<[u8; IRIS_REGION_SIZE_BYTES]> = StaticCell::new();
 
 static MODE_SETTING: AtomicUsize = AtomicUsize::new(0);
-
 
 #[embassy_executor::task]
 async fn gpio_task(mut pin: Input<'static>) {
@@ -80,7 +79,6 @@ async fn main(spawner: Spawner) {
     let mosi0 = p.PIN_3; // SPI0 TX
     let sck0 = p.PIN_2; // SPI0 SCK
 
-
     // LCD display 1: ST7789 pins
     let rst1 = p.PIN_15; // SPI1 TX
     let dcx1 = p.PIN_14; // SPI1 RX
@@ -89,7 +87,6 @@ async fn main(spawner: Spawner) {
     let mosi1 = p.PIN_11; // SPI1 TX
     let sck1 = p.PIN_10; // SPI1 SCK
     let cs1 = p.PIN_9; // SPI1 CSN
-
     
     let mut display_config = spi::Config::default();
     display_config.frequency = DISPLAY_FREQ;
@@ -115,10 +112,10 @@ async fn main(spawner: Spawner) {
     let spi_int0 = SpiInterface::new(spi0_device, dcx0_out);
 
     // Define the display from the display interface and initialize it
-    let mut display0 = Builder::new(ST7789, spi_int0)
+    let mut left_display = Builder::new(ST7789, spi_int0)
         .reset_pin(rst0_out)
         .display_size(240, 320)
-        .orientation(Orientation::new().rotate(Rotation::Deg270).flip_horizontal())
+        .orientation(Orientation::new().rotate(Rotation::Deg270))
         .invert_colors(ColorInversion::Inverted)
         .init(&mut Delay)
         .await
@@ -145,7 +142,7 @@ async fn main(spawner: Spawner) {
     let spi_int1 = SpiInterface::new(spi1_device, dcx1_out);
 
     // Define the display from the display interface and initialize it
-    let mut display1 = Builder::new(ST7789, spi_int1)
+    let mut right_display = Builder::new(ST7789, spi_int1)
         .reset_pin(rst1_out)
         .display_size(240, 320)
         .orientation(Orientation::new().rotate(Rotation::Deg90))
@@ -153,134 +150,171 @@ async fn main(spawner: Spawner) {
         .init(&mut Delay)
         .await
         .unwrap();
-
     
     // Initialize frame buffer
-    let frame_buffer = FRAME_BUFFER.init([0; FRAME_SIZE_BYTES]);
+    let single_frame_buf = SINGLE_FRAMEBUF.init([0; FRAME_SIZE_BYTES]);
+    let iris_frame_buf = IRIS_FRAMEBUF.init([0; IRIS_REGION_SIZE_BYTES]);
 
-    // let img_data = include_bytes!("../img/240_dim_fleur.qoi");
-    let eyeframe0 = include_bytes!("../img/calm-eye.qoi");
-    let eyeframe1 = include_bytes!("../img/love-eye.qoi");
-    let eyeframe2 = include_bytes!("../img/joy-eye.qoi");
-    let transp = include_bytes!("../img/eye-frame.qoi");
+    let eyeframe_left_qoi = Qoi::new(include_bytes!("../img/eye-frame-left-olive.qoi")).unwrap();
+    let eyeframe_left_img: Image<'_, Qoi<'_>> = Image::new(&eyeframe_left_qoi, Point::new(0,0));
+    
+    let eyeframe_right_qoi = Qoi::new(include_bytes!("../img/eye-frame-right-olive.qoi")).unwrap();
+    let eyeframe_right_img: Image<'_, Qoi<'_>> = Image::new(&eyeframe_right_qoi, Point::new(0,0));
 
-    let qoi1 = Qoi::new(eyeframe0).unwrap();
-    let qoi2 = Qoi::new(eyeframe1).unwrap();
-    let qoi3 = Qoi::new(eyeframe2).unwrap();
-    let qoi4 = Qoi::new(transp).unwrap();
-
-    let img_size = qoi1.size();
-    let inset_x:i32 = (DISPLAY_WIDTH - img_size.width as usize).try_into().unwrap();
-    let inset_y:i32 = (DISPLAY_HEIGHT - img_size.height as usize).try_into().unwrap();
-    let img_inset_point = Point::new(inset_x/2, inset_y/2);
-    let img_no_inset = Point::new(0,0);
-    let img1: Image<'_, Qoi<'_>> = Image::new(&qoi1, img_inset_point);
-    let img2: Image<'_, Qoi<'_>> = Image::new(&qoi2, img_inset_point);
-    let img3: Image<'_, Qoi<'_>> = Image::new(&qoi3, img_inset_point);
-    let eyeframe_img: Image<'_, Qoi<'_>> = Image::new(&qoi4, img_no_inset);
-
-
-    let img_array = [ img1, img2, img3];
-    let mut img_idx = 0;
+    let left_pupil_ctr: Point = Point::new(320-148,159);
+    let right_pupil_ctr: Point = Point::new(148,159);
+    let iris_diam = 122;
+    let pupil_diam = iris_diam / 2;
+    let highlight_size = Size::new(26 , 28);
 
 
     info!("Config done");
+
+    // draw initial background
+    {
+        let mut raw_fb =
+        RawFrameBuf::<Rgb565, _>::new(single_frame_buf.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        // raw_fb.clear(Rgb565::BLACK).unwrap();
+        eyeframe_left_img.draw(&mut raw_fb.color_converted()).unwrap(); 
+        left_display
+            .show_raw_data(0, 0, 
+                DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
+                single_frame_buf)
+            .await
+            .unwrap();
+    }
+    {
+        let mut raw_fb =
+        RawFrameBuf::<Rgb565, _>::new(single_frame_buf.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        // raw_fb.clear(Rgb565::BLACK).unwrap();
+        eyeframe_right_img.draw(&mut raw_fb.color_converted()).unwrap(); 
+        right_display
+            .show_raw_data(0, 0, 
+                DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
+                single_frame_buf)
+            .await
+            .unwrap();
+    }
+    
 
     // Enable LCD backlight
     bl0_out.set_high();
     bl1_out.set_high();
 
-   
-
+    let mut loop_count: usize = 0;
+    let iris_colors = [Rgb565::CSS_FIRE_BRICK, Rgb565::RED, Rgb565::CSS_DARK_MAGENTA, Rgb565::CSS_MEDIUM_VIOLET_RED, Rgb565::CSS_PALE_VIOLET_RED];
+    // Main drawing loop, runs forever
     loop {
-
         led.set_high();
-
         let mode_val = MODE_SETTING.load(Ordering::Relaxed);
-        if mode_val == 0 {
-            Timer::after_millis(500).await;
-        }
 
+         let iris_color =
+            if mode_val == 0 { Rgb565::CSS_MAGENTA }
+            else { iris_colors[loop_count % iris_colors.len()] };
+    
+        //draw left frame
         {
-            // Create a framebuffer for drawing the current frame 
+            let mut raw_fb = 
+                        RawFrameBuf::<Rgb565, _>::new(iris_frame_buf.as_mut_slice(), 125, 125);
+
             let mut raw_fb =
-                RawFrameBuf::<Rgb565, _>::new(frame_buffer.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
-
-            // Clear the framebuffer to black
-
-            if mode_val == 1 {
-                raw_fb.clear(Rgb565::CSS_MAGENTA).unwrap();
-                eyeframe_img.draw(&mut raw_fb.color_converted()).unwrap(); 
-                // overdraw the fancy eye stuff
-                draw_inner_eye(&mut raw_fb).unwrap();
-            }
-            else {
-                raw_fb.clear(Rgb565::BLACK).unwrap();
-                img_array[img_idx].draw(&mut raw_fb.color_converted()).unwrap(); 
-                img_idx = (img_idx + 1) % img_array.len();
-            }
-
-        }
-
-        // Send the framebuffer data to the display
-
-        display0
-            .show_raw_data(0, 0, 
-                    DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
-                    frame_buffer)
-                .await
-                .unwrap();
-
-        display1
+            RawFrameBuf::<Rgb565, _>::new(single_frame_buf.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+            
+            // raw_fb.clear(Rgb565::BLACK).unwrap();
+            // eyeframe_left_img.draw(&mut raw_fb.color_converted()).unwrap(); 
+            // overdraw the fancy eye stuff
+            draw_one_inner_eye(&mut raw_fb, true, &left_pupil_ctr, iris_diam, pupil_diam, &highlight_size, iris_color).unwrap();
+                        
+            left_display
             .show_raw_data(0, 0, 
                 DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
-                frame_buffer)
+                single_frame_buf)
             .await
             .unwrap();
+        }
 
+        // draw right frame
+        {
+            let mut raw_fb =
+                RawFrameBuf::<Rgb565, _>::new(single_frame_buf.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+            // raw_fb.clear(Rgb565::BLACK).unwrap();
+            // eyeframe_right_img.draw(&mut raw_fb.color_converted()).unwrap(); 
+            // overdraw the fancy eye stuff
+            draw_one_inner_eye(&mut raw_fb, false, &right_pupil_ctr, iris_diam, pupil_diam, &highlight_size,iris_color).unwrap();
+
+            right_display
+            .show_raw_data(0, 0, 
+                DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
+                single_frame_buf)
+            .await
+            .unwrap();
+        }
+
+        loop_count += 1;
         led.set_low();
     }
 }
 
 
-
-
-fn draw_inner_eye<T>(display: &mut T) -> Result<(), T::Error>
+fn draw_one_inner_eye<T>(
+    display: &mut T, 
+    is_left: bool, 
+    pupil_ctr: &Point, 
+    iris_diam: i32, 
+    pupil_diam: i32, 
+    highlight_size: &Size,
+    iris_color: Rgb565) -> Result<(), T::Error>
 where
     T: DrawTarget<Color = Rgb565>,
 {   
+    // display.clear(Rgb565::CSS_ROYAL_BLUE);
+
     // this line appears vertical onscreen
     Line::new(Point::new(160, 0), Point::new(160, 240))
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 4))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 1))
         .draw(display)?;
 
     // this line appears horizontal onscreen
      Line::new(Point::new(0, 120), Point::new(320, 120))
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::BLUE, 4))
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::BLUE, 1))
         .draw(display)?;
 
-    let pupil_ctr: Point = Point::new(150,160);
-
-    let iris_diam: i32 = 120;
+    let iris_diam_dim: u32 = iris_diam.try_into().unwrap();
     let iris_radius: i32 = iris_diam / 2;
-    let iris_radion: i32 = iris_radius.isqrt();
-    let iris_top_left = pupil_ctr - Point::new(iris_radion, iris_radion);
+    let iris_tl = Point::new(pupil_ctr.x - iris_radius, pupil_ctr.y - iris_radius);
+    let iris_bg_tl = Point::new(iris_tl.x - 2, iris_tl.y -2 );
+    let inset_iris_clip_tl = Point::new(iris_tl.x, iris_tl.y + 25);
+    let clip_rect = Rectangle::new(inset_iris_clip_tl, 
+        Size::new(iris_diam_dim, iris_diam_dim - 25));
 
-    let pupil_diam = iris_diam / 2;
-    let pupil_radius = iris_radius / 2;
-    let pupil_radion: i32 = pupil_radius.isqrt();
-    let pupil_top_left = pupil_ctr - Point::new(pupil_radion, pupil_radion);
+    let pupil_radius = pupil_diam / 2;
+    let pupil_top_left = Point::new(pupil_ctr.x - pupil_radius, pupil_ctr.y - pupil_radius);
 
-    Circle::new(iris_top_left, iris_diam.try_into().unwrap() )
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::RED))
-        .draw(display)?;
+    let highlight_tl = Point::new( pupil_top_left.x - 10, pupil_top_left .y - 5);
+    let small_highlight_tl = Point::new(highlight_tl.x + pupil_diam, highlight_tl.y + pupil_diam);
+
+    // draw a slightly larger black backdrop to iris
+    Circle::new(iris_bg_tl, iris_diam_dim + 4 )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .draw( display)?;
+
+    let mut clippy = display.clipped(&clip_rect);
+
+    Circle::new(iris_tl, iris_diam_dim )
+        .into_styled(PrimitiveStyle::with_fill(iris_color))
+        .draw(&mut clippy)?;
 
     Circle::new(pupil_top_left, pupil_diam.try_into().unwrap() )
         .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-        .draw(display)?;
+        .draw(&mut clippy)?;
 
+    Ellipse::new(highlight_tl, *highlight_size)
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+        .draw(&mut clippy)?;
+
+    Circle::new(small_highlight_tl, 14) 
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+        .draw(&mut clippy)?;
 
     Ok(())
 }
-
-
