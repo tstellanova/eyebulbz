@@ -15,7 +15,7 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Delay};
 
 use embedded_graphics::{
-    image::Image, pixelcolor::Rgb565, prelude::*, primitives::{Circle, Ellipse, Line, Primitive, PrimitiveStyle, Rectangle}
+    image::Image, pixelcolor::Rgb565, prelude::*, primitives::{Arc, Circle, Ellipse, Line, Primitive, PrimitiveStyle, Rectangle}
 };
 
 
@@ -175,7 +175,7 @@ async fn main(spawner: Spawner) {
     let pupil_diam = iris_diam / 2;
     let highlight_size = Size::new(26 , 28);
     let iris_radius: i32 = iris_diam / 2;
-    let left_iris_tl = Point::new(left_pupil_ctr.x - iris_radius, left_pupil_ctr.y - iris_radius);
+    let left_iris_tl = Point::new(left_pupil_ctr.x - iris_radius, left_pupil_ctr.y - iris_radius + 25);
     let right_iris_tl = Point::new(right_pupil_ctr.x - iris_radius, right_pupil_ctr.y - iris_radius);
     let left_inner_pupil_ctr = Point::new(IRIS_FRAME_EXTENT/2, IRIS_FRAME_EXTENT/2);//center in inner frame
 
@@ -197,7 +197,6 @@ async fn main(spawner: Spawner) {
         &eyeframe_right_img).await;
 
   
-    
 
     // Enable LCD backlight
     bl0_out.set_high();
@@ -210,7 +209,6 @@ async fn main(spawner: Spawner) {
         led.set_high();
         let mode_val = MODE_SETTING.load(Ordering::Relaxed);
 
-        
          let iris_color =
             if mode_val == 0 { Rgb565::CSS_MAGENTA }
             else { iris_colors[loop_count % iris_colors.len()] };
@@ -220,19 +218,23 @@ async fn main(spawner: Spawner) {
             let mut inner_fb = 
                         RawFrameBuf::<Rgb565, _>::new(iris_frame_buf.as_mut_slice(), 
                         IRIS_FRAME_WIDTH, IRIS_FRAME_HEIGHT);
-            inner_fb.clipped(&left_iris_clip_rect).clear(Rgb565::CSS_DARK_OLIVE_GREEN).unwrap();
+            inner_fb.clear(Rgb565::CSS_DARK_OLIVE_GREEN).unwrap();
 
             // overdraw the fancy eye stuff
-            draw_one_inner_eye(&mut inner_fb, true, &left_inner_pupil_ctr, iris_diam, pupil_diam, &highlight_size, iris_color).unwrap();
+            draw_one_inner_eye(&mut inner_fb, true, 
+                &left_inner_pupil_ctr, 
+                iris_diam, pupil_diam, &highlight_size, iris_color).unwrap();
                         
+            const TOTAL_TAIL_BYTES:usize = IRIS_FRAME_WIDTH * (IRIS_FRAME_HEIGHT - 25) * PIXEL_SIZE;
+
             left_display
-            .show_raw_data(left_iris_tl.x.try_into().unwrap(), 
-            left_iris_tl.y.try_into().unwrap(), 
-                IRIS_FRAME_WIDTH.try_into().unwrap(), 
-                IRIS_FRAME_HEIGHT.try_into().unwrap(), 
-                iris_frame_buf)
-            .await
-            .unwrap();
+                .show_raw_data(left_iris_tl.x.try_into().unwrap(), 
+                left_iris_tl.y.try_into().unwrap(), 
+                    IRIS_FRAME_WIDTH.try_into().unwrap(), 
+                    IRIS_FRAME_HEIGHT.try_into().unwrap(), 
+                    &iris_frame_buf[iris_frame_buf.len() - TOTAL_TAIL_BYTES..])
+                .await
+                .unwrap();
         }
 
         // draw right frame
@@ -315,6 +317,13 @@ where
         .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
         .draw( display)?;
 
+    if !is_left {
+        //redraw eyelash
+        let eyelash_ctr = Point::new(pupil_ctr.x, 240);
+         Arc::with_center(eyelash_ctr, 280, -45.0.deg(), -90.0.deg())
+                .into_styled(PrimitiveStyle::with_stroke(Rgb565::CYAN, 6 ))
+                .draw(display)?;
+    }
     let mut clippy = display.clipped(&clip_rect);
 
     Circle::new(iris_tl, iris_diam_dim )
@@ -332,6 +341,7 @@ where
     Circle::new(small_highlight_tl, 14) 
         .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
         .draw(&mut clippy)?;
+
 
     Ok(())
 }
