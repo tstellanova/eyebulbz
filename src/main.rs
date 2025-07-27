@@ -8,15 +8,16 @@ use portable_atomic::{AtomicUsize, Ordering};
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_executor::{Spawner};
 use embassy_rp:: {
-    gpio::{Input, Level, Output, Pull}, spi::{self, Async, Spi}
+    gpio::{Input, Level, Output, Pull}, spi::{self, Async, Spi},
 };
 
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
-use embassy_time::{Delay, Timer};
+use embassy_time::{Delay};
 
 use embedded_graphics::{
     image::Image, pixelcolor::Rgb565, prelude::*, primitives::{Circle, Ellipse, Line, Primitive, PrimitiveStyle, Rectangle}
 };
+
 
 use static_cell::StaticCell;
 
@@ -40,12 +41,19 @@ const DISPLAY_WIDTH: usize = 320;
 const DISPLAY_HEIGHT: usize = 240;
 const PIXEL_SIZE: usize = 2; // RGB565 = 2 bytes per pixel
 const FRAME_SIZE_BYTES: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT * PIXEL_SIZE;
-static SINGLE_FRAMEBUF: StaticCell<[u8; FRAME_SIZE_BYTES]> = StaticCell::new();
+type FullFrameBuf = [u8; FRAME_SIZE_BYTES];
+static SINGLE_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 
-const IRIS_REGION_SIZE_BYTES: usize = 125 * 125 * PIXEL_SIZE;
+const IRIS_FRAME_DIM: usize = 125;
+const IRIS_FRAME_EXTENT: i32 = IRIS_FRAME_DIM as i32;
+const IRIS_REGION_SIZE_BYTES: usize = IRIS_FRAME_DIM * IRIS_FRAME_DIM * PIXEL_SIZE;
 static IRIS_FRAMEBUF: StaticCell<[u8; IRIS_REGION_SIZE_BYTES]> = StaticCell::new();
 
 static MODE_SETTING: AtomicUsize = AtomicUsize::new(0);
+
+// type RealDisplayType<T>=lcd_async::Display<SpiInterface<embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice<'static, NoopRawMutex, embassy_rp::spi::Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
+type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
+
 
 #[embassy_executor::task]
 async fn gpio_task(mut pin: Input<'static>) {
@@ -152,7 +160,7 @@ async fn main(spawner: Spawner) {
         .unwrap();
     
     // Initialize frame buffer
-    let single_frame_buf = SINGLE_FRAMEBUF.init([0; FRAME_SIZE_BYTES]);
+    let single_frame_buf  = SINGLE_FRAMEBUF.init([0; FRAME_SIZE_BYTES]);
     let iris_frame_buf = IRIS_FRAMEBUF.init([0; IRIS_REGION_SIZE_BYTES]);
 
     let eyeframe_left_qoi = Qoi::new(include_bytes!("../img/eye-frame-left-olive.qoi")).unwrap();
@@ -171,30 +179,16 @@ async fn main(spawner: Spawner) {
     info!("Config done");
 
     // draw initial background
-    {
-        let mut raw_fb =
-        RawFrameBuf::<Rgb565, _>::new(single_frame_buf.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
-        // raw_fb.clear(Rgb565::BLACK).unwrap();
-        eyeframe_left_img.draw(&mut raw_fb.color_converted()).unwrap(); 
-        left_display
-            .show_raw_data(0, 0, 
-                DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
-                single_frame_buf)
-            .await
-            .unwrap();
-    }
-    {
-        let mut raw_fb =
-        RawFrameBuf::<Rgb565, _>::new(single_frame_buf.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
-        // raw_fb.clear(Rgb565::BLACK).unwrap();
-        eyeframe_right_img.draw(&mut raw_fb.color_converted()).unwrap(); 
-        right_display
-            .show_raw_data(0, 0, 
-                DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
-                single_frame_buf)
-            .await
-            .unwrap();
-    }
+    redraw_one_background(
+        &mut left_display, 
+        single_frame_buf,
+        &eyeframe_left_img).await;
+    redraw_one_background(
+        &mut right_display, 
+        single_frame_buf,
+        &eyeframe_right_img).await;
+
+  
     
 
     // Enable LCD backlight
@@ -214,8 +208,8 @@ async fn main(spawner: Spawner) {
     
         //draw left frame
         {
-            let mut raw_fb = 
-                        RawFrameBuf::<Rgb565, _>::new(iris_frame_buf.as_mut_slice(), 125, 125);
+            let mut _raw_fb = 
+                        RawFrameBuf::<Rgb565, _>::new(iris_frame_buf.as_mut_slice(), IRIS_FRAME_DIM, IRIS_FRAME_DIM);
 
             let mut raw_fb =
             RawFrameBuf::<Rgb565, _>::new(single_frame_buf.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
@@ -255,6 +249,23 @@ async fn main(spawner: Spawner) {
     }
 }
 
+async fn redraw_one_background<T>(display: &mut RealDisplayType<T>, 
+    base_frame_buf: &mut FullFrameBuf, 
+    bg_img: &Image<'_, Qoi<'_>>) 
+    where T: embassy_rp::spi::Instance
+
+{       
+    let mut raw_fb =
+        RawFrameBuf::<Rgb565, _>::new(base_frame_buf.as_mut_slice(), DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    // raw_fb.clear(Rgb565::BLACK).unwrap();
+    bg_img.draw(&mut raw_fb.color_converted()).unwrap(); 
+    let _ = display
+        .show_raw_data(0, 0, 
+            DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
+            base_frame_buf)
+            .await;
+    
+}
 
 fn draw_one_inner_eye<T>(
     display: &mut T, 
@@ -267,8 +278,6 @@ fn draw_one_inner_eye<T>(
 where
     T: DrawTarget<Color = Rgb565>,
 {   
-    // display.clear(Rgb565::CSS_ROYAL_BLUE);
-
     // this line appears vertical onscreen
     Line::new(Point::new(160, 0), Point::new(160, 240))
         .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 1))
