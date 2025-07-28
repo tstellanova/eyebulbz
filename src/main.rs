@@ -292,11 +292,12 @@ async fn redraw_one_background<T>(display: &mut RealDisplayType<T>,
     
 }
 
+const RT_PUPIL_CTR: Point = Point::new(148,159);
 const FARPOINT_CENTER: Point = Point::new(160, 240);
 const EYEBROW_DIAMETER: u32 = 470u32;
 const EYE_TOP_LID_DIAMETER: u32 = 360u32;
 const EYELASH_DIAMETER: u32 = 300u32;
-
+const LID_SHADOW_CTR_RT: Point = Point::new(RT_PUPIL_CTR.x, RT_PUPIL_CTR.y + 10);
 
 
 fn make_styled_arc(center: Point, diam: u32, start_deg: f32, sweep_deg: f32, color: Rgb565, stroke_width: u32) -> Styled<Arc, PrimitiveStyle<Rgb565>> {
@@ -365,11 +366,18 @@ where
         .into_styled(PrimitiveStyle::with_fill(iris_color))
         .draw(display)?;
 
+    // if !is_left {
+    //     // eyelid shadow (over iris)
+    //     make_styled_arc(LID_SHADOW_CTR_RT, 120, 
+    //         -30.0, -120.0, Rgb565::BLACK, 40).draw(display)?;
+    // }
+      
     // pupil
     Circle::new(pupil_top_left, pupil_diam.try_into().unwrap() )
         .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
         .draw(display)?;
 
+  
     // lens highlight large
     Ellipse::new(highlight_tl, *highlight_size)
         .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
