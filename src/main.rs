@@ -13,7 +13,7 @@ use embassy_rp:: {
 };
 
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
-use embassy_time::{Delay};
+use embassy_time::{Delay, Timer};
 
 use embedded_graphics::{
     prelude::DrawTargetExt,
@@ -131,6 +131,7 @@ async fn main(spawner: Spawner) {
         .await
         .unwrap();
 
+
     // create SPI1
     let spi1: Spi<'_, embassy_rp::peripherals::SPI1, Async> = 
         Spi::new(p.SPI1, sck1, mosi1, miso1, p.DMA_CH2, p.DMA_CH3, display_config.clone());
@@ -180,6 +181,7 @@ async fn main(spawner: Spawner) {
     let iris_radius: i32 = iris_diam / 2;
     let left_iris_tl = Point::new(left_pupil_ctr.x - iris_radius, left_pupil_ctr.y - iris_radius + 25);
 
+    let mut iris_dirty = true ;
     info!("Config done");
 
     // draw initial background at startup
@@ -192,6 +194,7 @@ async fn main(spawner: Spawner) {
     let mut loop_count: usize = 0;
     let iris_colors = [ Rgb565::CSS_BLUE_VIOLET, Rgb565::CSS_DARK_MAGENTA, Rgb565::CSS_YELLOW_GREEN, Rgb565::CSS_MEDIUM_VIOLET_RED, Rgb565::CSS_PALE_VIOLET_RED];
     
+    let mut old_mode_val: usize = 555;
     // Main drawing loop, runs forever
     loop {
         led.set_high();
@@ -199,10 +202,17 @@ async fn main(spawner: Spawner) {
 
          let iris_color =
             if mode_val == 0 { Rgb565::CSS_MAGENTA }
-            else { iris_colors[loop_count % iris_colors.len()] };
-
+            else { 
+                iris_dirty = true;
+                iris_colors[loop_count % iris_colors.len()]
+             };
+             
+        if old_mode_val != mode_val {
+            old_mode_val = mode_val;
+            iris_dirty = true;
+        }
         // draw the symmetric inner eye stuff onto right frame, then copy to left
-        {
+        if iris_dirty {
             let mut raw_fb =
                 RawFrameBuf::<Rgb565, _>::new(single_frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
             draw_symmetric_inner_eye(&mut raw_fb, &right_pupil_ctr, iris_diam, pupil_diam,iris_color).unwrap();
@@ -222,16 +232,23 @@ async fn main(spawner: Spawner) {
                 .await
                 .unwrap();
 
-            // // flip the image horizontally before writing to alternate display
-            // fliph_rgb565_inplace(single_frame_buf, DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
-            // left_display
-            //     .show_raw_data(0, 0, 
-            //         DISPLAY_WIDTH, DISPLAY_HEIGHT, 
-            //         single_frame_buf)
-            //         .await.unwrap();
+            // temporarily flip the alternate display orientation so that we can mirror the symmetric background image
+            let orig_left_orient = left_display.orientation();
+            left_display.set_orientation(orig_left_orient.flip_horizontal()).await.unwrap();
+            left_display
+                .show_raw_data(0, 0, 
+                    DISPLAY_WIDTH, DISPLAY_HEIGHT, 
+                    single_frame_buf)
+                    .await.unwrap();
+            // restore the alternate display orientation
+            left_display.set_orientation(orig_left_orient).await.unwrap();
         }
 
-        {
+        if iris_dirty {
+            // unsafe {
+            //     let holder = right_display.dcs();
+            //     draw_asymmetric_inner_canvas(holder, false, &ideal_iris_ctr, pupil_diam, highlight_diam);
+            // }
             let mut inner_eye_rgb565_fbuf  =
                 RawFrameBuf::<Rgb565, _>::new(inner_eye_fbuf.as_mut_slice(), INNER_EYE_FBUF_W as usize, INNER_EYE_FBUF_H as usize);
             
@@ -267,6 +284,10 @@ async fn main(spawner: Spawner) {
 
         // }
 
+        if !iris_dirty {
+            Timer::after_millis(250).await;
+        }
+        iris_dirty = false;
 
         loop_count += 1;
         led.set_low();
@@ -456,23 +477,37 @@ where
 
 }
 
+fn draw_asymmetric_inner_canvas<T>(
+    display: &mut T, 
+    _is_left: bool, 
+    eye_ctr: &Point,  
+    pupil_diam: i32, 
+    highlight_diam: i32,
+)
+where
+    T: DrawTarget<Color = Rgb565>,
+{   
+    let pupil_radius = pupil_diam / 2;
+    let highlight_diam_dim: u32 = highlight_diam.try_into().unwrap();
 
+    // two highlights are symmetric about the pupil center
+    let highlight_ctr = Point::new(eye_ctr.x - pupil_radius,  eye_ctr.y - pupil_radius/2  );
+    let small_highlight_ctr = Point::new(eye_ctr.x + pupil_radius, eye_ctr.y + pupil_radius/2 );
 
-fn flipped_horizontal<'a>(
-    buf: &'a [u8],
-    width: usize,
-    height: usize,
-) -> impl Iterator<Item = &'a [u8]> {
-    // assert_eq!(buf.len(), width * height * 2);
+    // lens highlight large
+    let _ = Circle::with_center(highlight_ctr, highlight_diam_dim )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+        .draw(display);
 
-    (0..height).flat_map(move |row| {
-        let row_start = row * width * 2;
-        (0..width).rev().map(move |col| {
-            let pixel_index = row_start + col * 2;
-            &buf[pixel_index..pixel_index + 2]
-        })
-    })
+    // lens highlight small
+    let _ = Circle::with_center(small_highlight_ctr, highlight_diam_dim/2) 
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+        .draw(display);
+
 }
+
+
+
 
 /// Flip a buffer representing an Rgb565 image horizontally (about Y axis)
 fn fliph_rgb565_inplace(buffer: &mut [u8], width: usize, height: usize) {
