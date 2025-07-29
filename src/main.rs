@@ -13,7 +13,7 @@ use embassy_rp:: {
 };
 
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
-use embassy_time::{Delay, Timer};
+use embassy_time::{Delay, Duration, Instant, Timer};
 
 use embedded_graphics::{
     prelude::DrawTargetExt,
@@ -59,11 +59,17 @@ type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopR
 // TODO make this a real interrupt handler rather than parking waiting on falling edge?
 #[embassy_executor::task]
 async fn gpio_task(mut pin: Input<'static>) {
+    let mut last_now = Instant::now();
     loop {
         let mut mode_val = MODE_SETTING.load(Ordering::Relaxed);
         pin.wait_for_falling_edge().await;
-        mode_val = (mode_val + 1) % NUM_MODES;
-        MODE_SETTING.store(mode_val, Ordering::Relaxed);
+        
+        let now = Instant::now();
+        if (now - last_now) > Duration::from_ticks(100) {
+            last_now = now;
+            mode_val = (mode_val + 1) % NUM_MODES;
+            MODE_SETTING.store(mode_val, Ordering::Relaxed);
+        }
     }
 }
 
@@ -206,7 +212,7 @@ async fn main(spawner: Spawner) {
                 iris_dirty = true;
                 iris_colors[loop_count % iris_colors.len()]
              };
-             
+
         if old_mode_val != mode_val {
             old_mode_val = mode_val;
             iris_dirty = true;
