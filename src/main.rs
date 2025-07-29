@@ -59,14 +59,14 @@ type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopR
 // TODO make this a real interrupt handler rather than parking waiting on falling edge?
 #[embassy_executor::task]
 async fn gpio_task(mut pin: Input<'static>) {
-    let mut last_now = Instant::now();
     loop {
         let mut mode_val = MODE_SETTING.load(Ordering::Relaxed);
         pin.wait_for_falling_edge().await;
         
-        let now = Instant::now();
-        if (now - last_now) > Duration::from_ticks(100) {
-            last_now = now;
+        // Introduce a debounce delay
+        Timer::after_millis(10).await; 
+
+        if pin.is_low() {
             mode_val = (mode_val + 1) % NUM_MODES;
             MODE_SETTING.store(mode_val, Ordering::Relaxed);
         }
@@ -251,10 +251,6 @@ async fn main(spawner: Spawner) {
         }
 
         if iris_dirty {
-            // unsafe {
-            //     let holder = right_display.dcs();
-            //     draw_asymmetric_inner_canvas(holder, false, &ideal_iris_ctr, pupil_diam, highlight_diam);
-            // }
             let mut inner_eye_rgb565_fbuf  =
                 RawFrameBuf::<Rgb565, _>::new(inner_eye_fbuf.as_mut_slice(), INNER_EYE_FBUF_W as usize, INNER_EYE_FBUF_H as usize);
             
@@ -482,38 +478,6 @@ where
         .draw(display);
 
 }
-
-fn draw_asymmetric_inner_canvas<T>(
-    display: &mut T, 
-    _is_left: bool, 
-    eye_ctr: &Point,  
-    pupil_diam: i32, 
-    highlight_diam: i32,
-)
-where
-    T: DrawTarget<Color = Rgb565>,
-{   
-    let pupil_radius = pupil_diam / 2;
-    let highlight_diam_dim: u32 = highlight_diam.try_into().unwrap();
-
-    // two highlights are symmetric about the pupil center
-    let highlight_ctr = Point::new(eye_ctr.x - pupil_radius,  eye_ctr.y - pupil_radius/2  );
-    let small_highlight_ctr = Point::new(eye_ctr.x + pupil_radius, eye_ctr.y + pupil_radius/2 );
-
-    // lens highlight large
-    let _ = Circle::with_center(highlight_ctr, highlight_diam_dim )
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
-        .draw(display);
-
-    // lens highlight small
-    let _ = Circle::with_center(small_highlight_ctr, highlight_diam_dim/2) 
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
-        .draw(display);
-
-}
-
-
-
 
 /// Flip a buffer representing an Rgb565 image horizontally (about Y axis)
 fn fliph_rgb565_inplace(buffer: &mut [u8], width: usize, height: usize) {
