@@ -96,12 +96,15 @@ async fn main(spawner: Spawner) {
     let miso0 = p.PIN_20;// SPI0 MisoPin -- unused
 
     // LCD display 1: ST7789 pins
-    let rst1 = p.PIN_15; 
-    let dcx1 = p.PIN_14; 
-    let bl1 = p.PIN_13; 
-    let mosi1 = p.PIN_11; // SPI1 MosiPin
-    let sck1 = p.PIN_10; // SPI1 SCK
-    let cs1 = p.PIN_9; // SPI1 CSN
+    // let rst1 = p.PIN_15; 
+    // let dcx1 = p.PIN_14; 
+    // let bl1 = p.PIN_13; 
+    let bl1 = p.PIN_14;// --> BL
+    let dcx1 = p.PIN_13;// --> RST
+    let dcx1 = p.PIN_12; // --> DC
+    let mosi1 = p.PIN_11; // SPI1 MosiPin --> DIN
+    let sck1 = p.PIN_10; // SPI1 SCK --> CLK
+    let cs1 = p.PIN_9; // SPI1 CSN --> CS
     
     let miso1 =  p.PIN_28; // SPI1 MisoPin -- unused
 
