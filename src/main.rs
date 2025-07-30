@@ -29,7 +29,7 @@ use lcd_async::{
     models::ST7789,
     options::{ColorInversion, Orientation, Rotation},
     raw_framebuf::RawFrameBuf,
-    Builder,
+    Builder, NoResetPin,
 };
 
 use tinyqoi::Qoi;
@@ -87,23 +87,24 @@ async fn main(spawner: Spawner) {
     let mut led = Output::new(p.PIN_25, Level::Low);
 
     // LCD display 0: ST7789 pins
-    let bl0 = p.PIN_8; // SPI1 RX
-    let rst0 = p.PIN_7; // SPI0 TX
-    let dcx0 = p.PIN_6; // SPI0 SCK
-    let cs0 = p.PIN_5; // SPI0 CSN
-    let miso0 = p.PIN_4; // SPI0 RX -- unused
-    let mosi0 = p.PIN_3; // SPI0 TX
-    let sck0 = p.PIN_2; // SPI0 SCK
+    let bl0 = p.PIN_7; // --> BL
+    let rst0 = p.PIN_6; // --> RST
+    let dcx0 = p.PIN_5; // --> DC
+    let cs0 = p.PIN_4; // SPI0 CSN --> CS
+    let mosi0 = p.PIN_3; // SPI0 MosiPin --> DIN 
+    let sck0 = p.PIN_2; // SPI0 SCK -->  CLK
+    let miso0 = p.PIN_20;// SPI0 MisoPin -- unused
 
     // LCD display 1: ST7789 pins
-    let rst1 = p.PIN_15; // SPI1 TX
-    let dcx1 = p.PIN_14; // SPI1 RX
-    let bl1 = p.PIN_13; // SPI1 CSN
-    let miso1 = p.PIN_12; // SPI1 RX -- unused
-    let mosi1 = p.PIN_11; // SPI1 TX
+    let rst1 = p.PIN_15; 
+    let dcx1 = p.PIN_14; 
+    let bl1 = p.PIN_13; 
+    let mosi1 = p.PIN_11; // SPI1 MosiPin
     let sck1 = p.PIN_10; // SPI1 SCK
     let cs1 = p.PIN_9; // SPI1 CSN
     
+    let miso1 =  p.PIN_28; // SPI1 MisoPin -- unused
+
     let mut display_config = spi::Config::default();
     display_config.frequency = DISPLAY_FREQ;
     display_config.phase = spi::Phase::CaptureOnSecondTransition;
@@ -371,40 +372,37 @@ fn make_styled_arc(center: Point, diam: u32, start_deg: f32, sweep_deg: f32, col
     )
 }
 
-// fn make_dbl_arc() {
-//     make_styled_arc(FARPOINT_CENTER + Size::new(0,30), EYELASH_DIAMETER+30, 
-//     -45.0, -90.0, Rgb565::CYAN, 8).draw(display)?;
+
+
+// fn draw_symm_outer_eye<T>(
+//     display: &mut T, 
+//     _is_left: bool, 
+// ) -> Result<(), T::Error>
+// where
+//     T: DrawTarget<Color = Rgb565>,
+// {
+//     // this line appears vertical onscreen
+//     // Line::new(Point::new(160, 0), Point::new(160, 240))
+//     //     .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 1))
+//     //     .draw(display)?;
+
+//     // this line appears horizontal onscreen
+//     //  Line::new(Point::new(0, 120), Point::new(320, 120))
+//     //     .into_styled(PrimitiveStyle::with_stroke(Rgb565::BLUE, 1))
+//     //     .draw(display)?;
+
+//     // draw stuff that doesn't shade iris
+//     // eyebrow
+//     make_styled_arc(FARPOINT_CENTER, EYEBROW_DIAMETER, 
+//         -55.0, -75.0, Rgb565::CSS_BLUE_VIOLET, 14).draw(display)?;
+//     // top eyelid
+//     make_styled_arc(FARPOINT_CENTER - Size::new(0, 10), EYELID_TOP_DIAMETER-10, 
+//         -60.0, -60.0, Rgb565::BLACK, 4).draw(display)?;
+//     make_styled_arc(FARPOINT_CENTER + Size::new(0, 5), EYELID_TOP_DIAMETER+20, 
+//         -60.0, -60.0, Rgb565::BLACK, 3).draw(display)?;
+
+//     Ok(())
 // }
-
-fn draw_symm_outer_eye<T>(
-    display: &mut T, 
-    _is_left: bool, 
-) -> Result<(), T::Error>
-where
-    T: DrawTarget<Color = Rgb565>,
-{
-    // this line appears vertical onscreen
-    // Line::new(Point::new(160, 0), Point::new(160, 240))
-    //     .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 1))
-    //     .draw(display)?;
-
-    // this line appears horizontal onscreen
-    //  Line::new(Point::new(0, 120), Point::new(320, 120))
-    //     .into_styled(PrimitiveStyle::with_stroke(Rgb565::BLUE, 1))
-    //     .draw(display)?;
-
-    // draw stuff that doesn't shade iris
-    // eyebrow
-    make_styled_arc(FARPOINT_CENTER, EYEBROW_DIAMETER, 
-        -55.0, -75.0, Rgb565::CSS_BLUE_VIOLET, 14).draw(display)?;
-    // top eyelid
-    make_styled_arc(FARPOINT_CENTER - Size::new(0, 10), EYELID_TOP_DIAMETER-10, 
-        -60.0, -60.0, Rgb565::BLACK, 4).draw(display)?;
-    make_styled_arc(FARPOINT_CENTER + Size::new(0, 5), EYELID_TOP_DIAMETER+20, 
-        -60.0, -60.0, Rgb565::BLACK, 3).draw(display)?;
-
-    Ok(())
-}
 
 fn draw_symmetric_inner_eye<T>(
     display: &mut T, 
@@ -428,8 +426,8 @@ where
         .into_styled(PrimitiveStyle::with_fill(iris_color))
         .draw(display)?;
 
-    // eyelid shadow (over iris)
-    // make_styled_arc(LID_SHADOW_CTR_RT, 120, 
+    // // eyelid shadow (over iris)
+    // make_styled_arc(*pupil_ctr, pupil_diam_dim + 20, 
     //     -30.0, -120.0, Rgb565::BLACK, 40).draw(display)?;
     
     // pupil
