@@ -86,7 +86,7 @@ async fn main(spawner: Spawner) {
     
     let mut led = Output::new(p.PIN_25, Level::Low);
 
-    // LCD display 0: ST7789 pins
+    // LCD display 0: ST7789V pins
     let bl0 = p.PIN_7; // --> BL
     let rst0 = p.PIN_6; // --> RST
     let dcx0 = p.PIN_5; // --> DC
@@ -95,17 +95,13 @@ async fn main(spawner: Spawner) {
     let sck0 = p.PIN_2; // SPI0 SCK -->  CLK
     let miso0 = p.PIN_20;// SPI0 MisoPin -- unused
 
-    // LCD display 1: ST7789 pins
-    // let rst1 = p.PIN_15; 
-    // let dcx1 = p.PIN_14; 
-    // let bl1 = p.PIN_13; 
+    // LCD display 1: ST7789V pins
     let bl1 = p.PIN_14;// --> BL
-    let dcx1 = p.PIN_13;// --> RST
+    let rst1 = p.PIN_13;// --> RST
     let dcx1 = p.PIN_12; // --> DC
     let mosi1 = p.PIN_11; // SPI1 MosiPin --> DIN
     let sck1 = p.PIN_10; // SPI1 SCK --> CLK
     let cs1 = p.PIN_9; // SPI1 CSN --> CS
-    
     let miso1 =  p.PIN_28; // SPI1 MisoPin -- unused
 
     let mut display_config = spi::Config::default();
