@@ -9,7 +9,7 @@ use portable_atomic::{AtomicUsize, Ordering};
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_executor::{Spawner};
 use embassy_rp:: {
-    gpio::{Input, Level, Output, Pull}, spi::{self, Async, Spi},
+    gpio::{Input, Level, Output, Pull}, pwm::{self, Pwm, SetDutyCycle}, spi::{self, Async, Spi}
 };
 
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
@@ -29,7 +29,7 @@ use lcd_async::{
     models::ST7789,
     options::{ColorInversion, Orientation, Rotation},
     raw_framebuf::RawFrameBuf,
-    Builder, NoResetPin,
+    Builder,
 };
 
 use tinyqoi::Qoi;
@@ -55,6 +55,7 @@ static IRIS_FRAMEBUF: StaticCell<[u8; INNER_EYE_FBUF_SIZE_BYTES]> = StaticCell::
 static MODE_SETTING: AtomicUsize = AtomicUsize::new(0);
 
 type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
+
 
 // TODO make this a real interrupt handler rather than parking waiting on falling edge?
 #[embassy_executor::task]
@@ -121,8 +122,12 @@ async fn main(spawner: Spawner) {
     let dcx0_out = Output::new(dcx0, Level::Low);
     let rst0_out = Output::new(rst0, Level::Low);
 
+    // let mut c = Config::default();
+    // c.top = period;
+    // c.divider = divider.into();
+
     // LCD backlight -- initially off
-    let mut bl0_out = Output::new(bl0, Level::Low); // TODO use PWM to dim bl0 and bl1?
+    let mut bl0_pwm_out: Pwm<'_> = Pwm::new_output_b(p.PWM_SLICE3, bl0, pwm::Config::default());
 
     // display interface abstraction from SPI and DC
     let spi_int0 = SpiInterface::new(spi0_device, dcx0_out);
@@ -152,7 +157,8 @@ async fn main(spawner: Spawner) {
     let rst1_out = Output::new(rst1, Level::Low);
 
     // LCD backlight -- initially off
-    let mut bl1_out = Output::new(bl1, Level::Low);
+    // let mut bl1_out = Output::new(bl1, Level::Low);
+    let mut bl1_pwm_out: Pwm<'_> = Pwm::new_output_a(p.PWM_SLICE7, bl1, pwm::Config::default());
 
     // display interface abstraction from SPI and DC
     let spi_int1 = SpiInterface::new(spi1_device, dcx1_out);
@@ -194,8 +200,11 @@ async fn main(spawner: Spawner) {
     redraw_symmetric_bg( &mut left_display, &mut right_display, single_frame_buf, &eyeframe_right_img).await;
   
     // Enable LCD backlight
-    bl0_out.set_high();
-    bl1_out.set_high();
+    // bl0_out.set_high();
+    // bl1_out.set_high();
+
+    bl0_pwm_out.set_duty_cycle_percent(10).unwrap();
+    bl1_pwm_out.set_duty_cycle_percent(10).unwrap();
 
     let mut loop_count: usize = 0;
     let iris_colors = [ Rgb565::CSS_BLUE_VIOLET, Rgb565::CSS_DARK_MAGENTA, Rgb565::CSS_YELLOW_GREEN, Rgb565::CSS_MEDIUM_VIOLET_RED, Rgb565::CSS_PALE_VIOLET_RED];
@@ -206,7 +215,7 @@ async fn main(spawner: Spawner) {
         led.set_high();
         let mode_val = MODE_SETTING.load(Ordering::Relaxed);
 
-         let iris_color =
+        let iris_color =
             if mode_val == 0 { Rgb565::CSS_MAGENTA }
             else { 
                 iris_dirty = true;
@@ -217,6 +226,12 @@ async fn main(spawner: Spawner) {
             old_mode_val = mode_val;
             iris_dirty = true;
         }
+
+        // TODO brightness cycling based on mode
+        let brightness_percent: u8 = ((loop_count % 20)*5).try_into().unwrap();
+        bl0_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
+        bl1_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
+
         // draw the symmetric inner eye stuff onto right frame, then copy to left
         if iris_dirty {
             let mut raw_fb =
