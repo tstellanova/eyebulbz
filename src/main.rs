@@ -18,7 +18,7 @@ use embassy_sync::{blocking_mutex::raw::{NoopRawMutex}, mutex::Mutex};
 use embassy_time::{Delay, Timer};
 
 use embedded_graphics::{
-    image::Image, pixelcolor::Rgb565, prelude::{DrawTargetExt, *}, primitives::{Arc, Circle, Primitive, PrimitiveStyle, Sector, Styled}
+    image::Image, pixelcolor::Rgb565, prelude::{DrawTargetExt, *}, primitives::{Arc, Circle, Ellipse, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Sector, Styled, StyledDrawable}
 };
 
 use static_cell::StaticCell;
@@ -65,7 +65,7 @@ const FARPOINT_CENTER: Point = Point::new(160, 240);
 
 const EYELASH_DIAMETER: u32 = 310u32;
 
-const NUM_A_MODES: usize = 4;
+const NUM_A_MODES: usize = 5;
 
 const IRIS_PALETTE_PURPLE: [Rgb565; 8] = [ 
     Rgb565::CSS_INDIGO, 
@@ -107,6 +107,104 @@ fn build_styled_arc(center: Point, diam: u32, start_deg: f32, sweep_deg: f32, co
     )
 }
 
+fn draw_elliptic_inner_eye<T>(
+    display: &mut T, 
+    pupil_ctr: &Point, 
+    iris_diam: i32, 
+    pupil_diam: i32, 
+    iris_color: Rgb565,
+    highlight_diam: i32,
+    look_correction: f32,
+) -> Result<(), T::Error>
+where
+    T: DrawTarget<Color = Rgb565>,
+{   
+    let pupil_diam_dim: u32 = pupil_diam.try_into().unwrap();
+    let iris_diam_dim: u32 = iris_diam.try_into().unwrap();
+
+    // fill with bg color
+    let _ = Circle::with_center(*pupil_ctr, iris_diam_dim + 15) 
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::CSS_DARK_OLIVE_GREEN))
+        .draw(display);
+
+    let iris_style = PrimitiveStyleBuilder::new()
+            .stroke_width(2)
+            .stroke_color(Rgb565::BLACK)
+            .fill_color(iris_color)
+            .build();
+    
+    let iris_size = Size::new((iris_diam_dim as f32 * look_correction.abs()) as u32, iris_diam_dim);
+    let offset_iris_ctr = 
+        if look_correction == 1.0 {
+            pupil_ctr.clone()
+        }
+        else if look_correction > 0. {
+            *pupil_ctr + Size::new(10, 0)
+        }
+        else {
+            *pupil_ctr - Size::new(10, 0)
+        };
+    Ellipse::with_center(offset_iris_ctr, iris_size)
+        .into_styled(iris_style)
+        .draw(display)?;    
+
+    // // shaded iris
+    // let shaded_iris_color = Rgb565::new(iris_color.r()/2, iris_color.g()/2, iris_color.b()/2);
+    // let iris_shade_start = Angle::from_degrees(-15.0);
+    // let iris_shade_sweep = Angle::from_degrees(-180.0 + 15.0) - iris_shade_start;
+    // Sector::with_center(*pupil_ctr, iris_diam_dim, iris_shade_start, iris_shade_sweep)
+    //     .into_styled(PrimitiveStyle::with_fill(shaded_iris_color))
+    //     .draw(display)?;
+
+    // pupil
+    let pupil_size = Size::new((pupil_diam_dim as f32 * look_correction.abs()) as u32, pupil_diam_dim);
+    let offset_pupil_ctr = 
+        if look_correction == 1.0 {
+            pupil_ctr.clone()
+        }
+        else if look_correction > 0. {
+            *pupil_ctr + Size::new(20, 0)
+        }
+        else {
+            *pupil_ctr - Size::new(20, 0)
+        };
+    Ellipse::with_center(offset_pupil_ctr, pupil_size)
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .draw(display)?; 
+
+    // draw stuff that shades iris
+    // eyelash inner (liner)
+    build_styled_arc(FARPOINT_CENTER + Size::new(0,30), EYELASH_DIAMETER+30, 
+        -45.0, -90.0, Rgb565::CYAN, 8).draw(display)?;
+
+    // eyelash outer
+    build_styled_arc(FARPOINT_CENTER, EYELASH_DIAMETER, 
+        -35.0, -110.0, Rgb565::CSS_INDIGO, 12).draw(display)?;
+
+    const HIGHLIGHT_X_SHIFT: i32 = 8;
+    const HIGHLIGHT_Y_SHIFT: i32 = 4;
+    let pupil_half_width = pupil_size.width as i32 / 2;
+    let pupil_half_height = pupil_size.height as i32 / 2;
+    let highlight_diam_dim: u32 = highlight_diam as u32;
+
+    // two highlights are symmetric about the pupil center
+    let highlight_ctr = Point::new(offset_pupil_ctr.x - pupil_half_width + HIGHLIGHT_X_SHIFT,  (offset_pupil_ctr.y - pupil_half_height) + HIGHLIGHT_Y_SHIFT );
+    let small_highlight_ctr = Point::new(offset_pupil_ctr.x + pupil_half_width - HIGHLIGHT_X_SHIFT, (offset_pupil_ctr.y + pupil_half_height) - HIGHLIGHT_Y_SHIFT);
+
+    // lens highlight large
+    let _ = Circle::with_center(highlight_ctr, highlight_diam_dim )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+        .draw(display);
+
+    // lens highlight small
+    let _ = Circle::with_center(small_highlight_ctr, highlight_diam_dim/2) 
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+        .draw(display);
+
+    Ok(())
+}
+
+
 fn draw_symmetric_inner_eye<T>(
     display: &mut T, 
     pupil_ctr: &Point, 
@@ -119,14 +217,20 @@ where
     let pupil_diam_dim: u32 = pupil_diam.try_into().unwrap();
     let iris_diam_dim: u32 = iris_diam.try_into().unwrap();
 
-    // behind iris
-    Circle::with_center(*pupil_ctr, iris_diam_dim + 4)
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-        .draw(display)?;
+    let iris_style = PrimitiveStyleBuilder::new()
+        .stroke_width(2)
+        .stroke_color(Rgb565::BLACK)
+        .fill_color(iris_color)
+        .build();
+
+    // // behind iris
+    // Circle::with_center(*pupil_ctr, iris_diam_dim + 4)
+    //     .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+    //     .draw(display)?;
 
     // iris
     Circle::with_center(*pupil_ctr, iris_diam_dim)
-        .into_styled(PrimitiveStyle::with_fill(iris_color))
+        .into_styled(iris_style)
         .draw(display)?;
 
     // shaded iris
@@ -153,7 +257,6 @@ where
 
     Ok(())
 }
-
 
 fn draw_asymmetric_inner_eye<T>(
     display: &mut T, 
@@ -185,13 +288,14 @@ where
 
 }
 
-fn draw_one_full_eye(is_left: bool, frame_buf: &mut FullFrameBuf, pupil_ctr: &Point, pupil_diam: i32, iris_diam: i32,  iris_color: Rgb565, highlight_diam: i32) {
+fn draw_one_full_eye(frame_buf: &mut FullFrameBuf, look_correction: f32, pupil_ctr: &Point, pupil_diam: i32, iris_diam: i32,  iris_color: Rgb565, highlight_diam: i32) {
     let mut raw_fb =
         RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
     // let crop_rect = Rectangle::with_center(*pupil_ctr, Size::new(DISPLAY_WIDTH as u32, (DISPLAY_HEIGHT as u32)/2));
     // let mut cropped_fb = raw_fb.cropped(&crop_rect);
-    draw_symmetric_inner_eye(&mut raw_fb, &pupil_ctr, iris_diam, pupil_diam, iris_color).unwrap();
-    draw_asymmetric_inner_eye(&mut raw_fb, is_left , &pupil_ctr, pupil_diam, highlight_diam);
+    // draw_symmetric_inner_eye(&mut raw_fb, &pupil_ctr, iris_diam, pupil_diam, iris_color).unwrap();
+    draw_elliptic_inner_eye(&mut raw_fb, &pupil_ctr, iris_diam, pupil_diam, iris_color, highlight_diam, look_correction).unwrap();
+    // draw_asymmetric_inner_eye(&mut raw_fb, is_left , &pupil_ctr, pupil_diam, highlight_diam);
 }
 
 // // Flip a buffer representing an Rgb565 image horizontally (about Y axis)
@@ -361,27 +465,35 @@ async fn main(spawner: Spawner) {
     let mut brightness_ascending: bool = true;
     let mut old_mode_val: usize = 555;
 
+    let mut look_correction:f32 = 1.0;
     // Main drawing loop, runs forever
     loop {
         led.set_low();
         let mode_val = MODE_SETTING.load(Ordering::Relaxed);
 
+        let mut rng_bytes:[u8;4] = [0; 4];
+        rnd_src.fill_bytes(&mut rng_bytes);
+
          let iris_color =
-            if mode_val == 0 { Rgb565::CSS_MAGENTA }
-            else if mode_val == 1 {
+            if mode_val == 0 { 
+                Rgb565::CSS_MAGENTA 
+            }
+            else if mode_val == 1 { 
+                iris_dirty = true;
+                Rgb565::CSS_RED 
+            }
+            else if mode_val == 2 {
                 iris_dirty = true;
                 let color_idx = loop_count % IRIS_PALETTE_SPECTRUM.len();
                 IRIS_PALETTE_SPECTRUM[color_idx]
             }
-            else if mode_val == 2 {
+            else if mode_val == 3 {
                 iris_dirty = true;
                 let color_idx = loop_count % IRIS_PALETTE_PURPLE.len();
                 IRIS_PALETTE_PURPLE[color_idx]  
             }
             else {
-                let mut rng_bytes:[u8;3] = [0; 3];
                 iris_dirty = true;
-                rnd_src.fill_bytes(&mut rng_bytes);
                 Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2])
              };
 
@@ -417,10 +529,17 @@ async fn main(spawner: Spawner) {
             bg_dirty = false;
         }
 
+        let look_step = rng_bytes[3] % 3;
+        let look_correction = match look_step {
+            1 => 0.95,
+            2 => -0.95,
+            _ => 1.0,
+        };
+  
         if iris_dirty {
             // Draw both eyes
-            draw_one_full_eye(true, disp0_frame_buf, &left_pupil_ctr, pupil_diam, iris_diam, iris_color, highlight_diam);
-            draw_one_full_eye(false, disp1_frame_buf, &right_pupil_ctr, pupil_diam, iris_diam, iris_color, highlight_diam);
+            draw_one_full_eye(disp0_frame_buf, look_correction, &left_pupil_ctr, pupil_diam, iris_diam, iris_color, highlight_diam);
+            draw_one_full_eye(disp1_frame_buf, look_correction, &right_pupil_ctr, pupil_diam, iris_diam, iris_color, highlight_diam);
 
             // push both framebuffers to their respective displays
             left_display
