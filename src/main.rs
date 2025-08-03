@@ -26,7 +26,6 @@ use embedded_graphics::{
 
 use static_cell::StaticCell;
 
-
 use lcd_async::{
     interface::SpiInterface,
     models::ST7789,
@@ -36,26 +35,21 @@ use lcd_async::{
 };
 
 use tinyqoi::Qoi;
-
 use {defmt_rtt as _, panic_probe as _};
-
 
 /// Tell the Boot ROM about our application
 #[link_section = ".start_block"]
 #[used]
 pub static IMAGE_DEF: ImageDef = hal::block::ImageDef::secure_exe();
 
-
-
-
 // Program metadata for `picotool info`.
 // This isn't needed, but it's recomended to have these minimal entries.
 #[link_section = ".bi_entries"]
 #[used]
 pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
-    embassy_rp::binary_info::rp_program_name!(c"Blinky Example"),
+    embassy_rp::binary_info::rp_program_name!(c"Kerplonk"),
     embassy_rp::binary_info::rp_program_description!(
-        c"This example tests the RP Pico on board LED, connected to gpio 25"
+        c"Testing drawing with dual displays"
     ),
     embassy_rp::binary_info::rp_cargo_version!(),
     embassy_rp::binary_info::rp_program_build_attribute!(),
@@ -71,122 +65,27 @@ const PIXEL_SIZE: u16 = 2; // RGB565 = 2 bytes per pixel
 const FRAME_SIZE_BYTES: usize = DISPLAY_WIDTH as usize * DISPLAY_HEIGHT as usize * PIXEL_SIZE as usize;
 type FullFrameBuf = [u8; FRAME_SIZE_BYTES];
 
-#[link_section = ".ram"]
-static DISPLAY0_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
-#[link_section = ".ram"]
-static DISPLAY1_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
+const FARPOINT_CENTER: Point = Point::new(160, 240);
 
-// #[link_section = ".device_info"]
-const INNER_EYE_FBUF_W: u16 = 125;
-const INNER_EYE_FBUF_H: u16 = 125;
-const INNER_EYE_FBUF_SIZE_BYTES: usize = INNER_EYE_FBUF_W as usize * INNER_EYE_FBUF_H as usize * PIXEL_SIZE as usize;
-static IRIS_FRAMEBUF: StaticCell<[u8; INNER_EYE_FBUF_SIZE_BYTES]> = StaticCell::new();
+const EYELASH_DIAMETER: u32 = 310u32;
+
+static DISPLAY0_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
+static DISPLAY1_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 
 static MODE_SETTING: AtomicUsize = AtomicUsize::new(0);
 
-type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
+// type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
 
-
-// TODO make this a real interrupt handler rather than parking waiting on falling edge?
-#[embassy_executor::task]
-async fn gpio_task(mut pin: Input<'static>) {
-    loop {
-        let mut mode_val = MODE_SETTING.load(Ordering::Relaxed);
-        pin.wait_for_falling_edge().await;
-        
-        // Introduce a debounce delay
-        Timer::after_millis(10).await; 
-
-        if pin.is_low() {
-            mode_val = (mode_val + 1) % NUM_MODES;
-            MODE_SETTING.store(mode_val, Ordering::Relaxed);
-        }
-    }
-}
-
-
-
-fn copy_centered_region_chunks(
-    src_buffer: &[u8],
-    dest_buffer: &mut [u8],
-    display_width: usize,
-    inner_width: usize,
-    inner_height: usize,
-    center: &Point, 
-) {
-
-    const BYTES_PER_PIXEL: usize = 2;
-    let start_x = (center.x as usize).saturating_sub(inner_width / 2);
-    let start_y = (center.y as usize).saturating_sub(inner_height / 2);
-
-    let src_rows = src_buffer.chunks_exact(display_width * BYTES_PER_PIXEL);
-    let dest_rows = dest_buffer.chunks_exact_mut(inner_width * BYTES_PER_PIXEL);
-
-    for (dest_row, src_row) in dest_rows.zip(src_rows.skip(start_y).take(inner_height)) {
-        let src_start = start_x * BYTES_PER_PIXEL;
-        let src_end = src_start + inner_width * BYTES_PER_PIXEL;
-        dest_row.copy_from_slice(&src_row[src_start..src_end]);
-    }
-
-}
-
-async fn redraw_one_bg<T>(display: &mut RealDisplayType<T>, 
+fn render_one_bg_image(
     frame_buf: &mut FullFrameBuf, 
     bg_img: &Image<'_, Qoi<'_>>) 
-    where T: embassy_rp::spi::Instance, 
 {       
-    // draw the symmetric background image into the right display, then mirror into the left
     let mut raw_fb =
         RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
-    // raw_fb.clear(Rgb565::BLACK).unwrap();
     bg_img.draw(&mut raw_fb.color_converted()).unwrap(); 
-    let _ = display
-        .show_raw_data(0, 0, 
-            DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
-            frame_buf)
-            .await.unwrap();
-    
 }
 
-
-
-async fn redraw_symmetric_bg<T,U>(left_display: &mut RealDisplayType<T>, right_display: &mut RealDisplayType<U>, 
-    base_frame_buf: &mut FullFrameBuf, 
-    bg_img: &Image<'_, Qoi<'_>>) 
-    where T: embassy_rp::spi::Instance, 
-    U: embassy_rp::spi::Instance,
-{       
-    // draw the symmetric background image into the right display, then mirror into the left
-    let mut raw_fb =
-        RawFrameBuf::<Rgb565, _>::new(base_frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
-    // raw_fb.clear(Rgb565::BLACK).unwrap();
-    bg_img.draw(&mut raw_fb.color_converted()).unwrap(); 
-    let _ = right_display
-        .show_raw_data(0, 0, 
-            DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
-            base_frame_buf)
-            .await.unwrap();
-
-    // temporarily flip the alternate display orientation so that we can mirror the symmetric background image
-    let orig_left_orient = left_display.orientation();
-    let tmp_left_orient = orig_left_orient.flip_horizontal();
-    left_display.set_orientation(tmp_left_orient).await.unwrap();
-    let _ = left_display
-        .show_raw_data(0, 0, 
-            DISPLAY_WIDTH.try_into().unwrap(), DISPLAY_HEIGHT.try_into().unwrap(), 
-            base_frame_buf)
-            .await.unwrap();
-    // restore the alternate display orientation
-    left_display.set_orientation(orig_left_orient).await.unwrap();
-    
-}
-
-const FARPOINT_CENTER: Point = Point::new(160, 240);
-// const EYEBROW_DIAMETER: u32 = 470u32;
-// const EYELID_TOP_DIAMETER: u32 = 330u32;
-const EYELASH_DIAMETER: u32 = 310u32;
-
-fn make_styled_arc(center: Point, diam: u32, start_deg: f32, sweep_deg: f32, color: Rgb565, stroke_width: u32) -> Styled<Arc, PrimitiveStyle<Rgb565>> {
+fn build_styled_arc(center: Point, diam: u32, start_deg: f32, sweep_deg: f32, color: Rgb565, stroke_width: u32) -> Styled<Arc, PrimitiveStyle<Rgb565>> {
     Styled::new(
         Arc::with_center(center, 
             diam, 
@@ -196,39 +95,7 @@ fn make_styled_arc(center: Point, diam: u32, start_deg: f32, sweep_deg: f32, col
     )
 }
 
-
-
-// fn draw_symm_outer_eye<T>(
-//     display: &mut T, 
-//     _is_left: bool, 
-// ) -> Result<(), T::Error>
-// where
-//     T: DrawTarget<Color = Rgb565>,
-// {
-//     // this line appears vertical onscreen
-//     // Line::new(Point::new(160, 0), Point::new(160, 240))
-//     //     .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 1))
-//     //     .draw(display)?;
-
-//     // this line appears horizontal onscreen
-//     //  Line::new(Point::new(0, 120), Point::new(320, 120))
-//     //     .into_styled(PrimitiveStyle::with_stroke(Rgb565::BLUE, 1))
-//     //     .draw(display)?;
-
-//     // draw stuff that doesn't shade iris
-//     // eyebrow
-//     make_styled_arc(FARPOINT_CENTER, EYEBROW_DIAMETER, 
-//         -55.0, -75.0, Rgb565::CSS_BLUE_VIOLET, 14).draw(display)?;
-//     // top eyelid
-//     make_styled_arc(FARPOINT_CENTER - Size::new(0, 10), EYELID_TOP_DIAMETER-10, 
-//         -60.0, -60.0, Rgb565::BLACK, 4).draw(display)?;
-//     make_styled_arc(FARPOINT_CENTER + Size::new(0, 5), EYELID_TOP_DIAMETER+20, 
-//         -60.0, -60.0, Rgb565::BLACK, 3).draw(display)?;
-
-//     Ok(())
-// }
-
-fn draw_inner_eye<T>(
+fn draw_symmetric_inner_eye<T>(
     display: &mut T, 
     pupil_ctr: &Point, 
     iris_diam: i32, 
@@ -249,11 +116,7 @@ where
     Circle::with_center(*pupil_ctr, iris_diam_dim)
         .into_styled(PrimitiveStyle::with_fill(iris_color))
         .draw(display)?;
-
-    // // eyelid shadow (over iris)
-    // make_styled_arc(*pupil_ctr, pupil_diam_dim + 20, 
-    //     -30.0, -120.0, Rgb565::BLACK, 40).draw(display)?;
-    
+ 
     // pupil
     Circle::with_center(*pupil_ctr, pupil_diam_dim )
         .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
@@ -261,11 +124,11 @@ where
 
     // draw stuff that shades iris
     // eyelash inner (liner)
-    make_styled_arc(FARPOINT_CENTER + Size::new(0,30), EYELASH_DIAMETER+30, 
+    build_styled_arc(FARPOINT_CENTER + Size::new(0,30), EYELASH_DIAMETER+30, 
         -45.0, -90.0, Rgb565::CYAN, 8).draw(display)?;
 
     // eyelash outer
-    make_styled_arc(FARPOINT_CENTER, EYELASH_DIAMETER, 
+    build_styled_arc(FARPOINT_CENTER, EYELASH_DIAMETER, 
         -35.0, -110.0, Rgb565::CSS_INDIGO, 12).draw(display)?;
 
     Ok(())
@@ -286,8 +149,8 @@ where
     let highlight_diam_dim: u32 = highlight_diam.try_into().unwrap();
 
     // two highlights are symmetric about the pupil center
-    let highlight_ctr = Point::new(eye_ctr.x - pupil_radius,  eye_ctr.y - pupil_radius/2  );
-    let small_highlight_ctr = Point::new(eye_ctr.x + pupil_radius, eye_ctr.y + pupil_radius/2 );
+    let highlight_ctr = Point::new(eye_ctr.x - pupil_radius,  eye_ctr.y - pupil_radius/2 - 2 );
+    let small_highlight_ctr = Point::new(eye_ctr.x + pupil_radius, eye_ctr.y + pupil_radius/2 +2);
 
     // lens highlight large
     let _ = Circle::with_center(highlight_ctr, highlight_diam_dim )
@@ -299,6 +162,13 @@ where
         .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
         .draw(display);
 
+}
+
+fn draw_one_full_eye(is_left: bool, frame_buf: &mut FullFrameBuf, pupil_ctr: &Point, pupil_diam: i32, iris_diam: i32,  iris_color: Rgb565, highlight_diam: i32) {
+    let mut raw_fb =
+    RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
+    draw_symmetric_inner_eye(&mut raw_fb, &pupil_ctr, iris_diam, pupil_diam,iris_color).unwrap();
+    draw_asymmetric_inner_eye(&mut raw_fb, is_left , &pupil_ctr, pupil_diam, highlight_diam);
 }
 
 // // Flip a buffer representing an Rgb565 image horizontally (about Y axis)
@@ -322,11 +192,29 @@ where
 // }
 
 
+// ---- TASKS defined below ---
+
+// TODO make this a real interrupt handler rather than parking waiting on falling edge?
+#[embassy_executor::task]
+async fn gpio_task(mut pin: Input<'static>) {
+    loop {
+        let mut mode_val = MODE_SETTING.load(Ordering::Relaxed);
+        pin.wait_for_falling_edge().await;
+        
+        // Introduce a debounce delay
+        Timer::after_millis(10).await; 
+
+        if pin.is_low() {
+            mode_val = (mode_val + 1) % NUM_MODES;
+            MODE_SETTING.store(mode_val, Ordering::Relaxed);
+        }
+    }
+}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
-    let total_fbuf_size = 2*FRAME_SIZE_BYTES + INNER_EYE_FBUF_SIZE_BYTES;
+    let total_fbuf_size = 2*FRAME_SIZE_BYTES ; //+ INNER_EYE_FBUF_SIZE_BYTES;
     info!("Start Config total_fbuf_size = {}",total_fbuf_size);
 
     MODE_SETTING.store(0, Ordering::Relaxed);
@@ -418,9 +306,8 @@ async fn main(spawner: Spawner) {
         .unwrap();
     
     // Initialize frame buffers
-    let disp0_frame_buf  = DISPLAY0_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES]);
-    let disp1_frame_buf  = DISPLAY1_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES]);
-    let inner_eye_fbuf = IRIS_FRAMEBUF.init_with(move || [0; INNER_EYE_FBUF_SIZE_BYTES]);
+    let disp0_frame_buf: &'static mut [u8; FRAME_SIZE_BYTES]  = DISPLAY0_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES]);
+    let disp1_frame_buf: &'static mut [u8; FRAME_SIZE_BYTES]  = DISPLAY1_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES]);
 
     let eyeframe_left_qoi = Qoi::new(include_bytes!("../img/eye-frame-left-olive.qoi")).unwrap();
     let eyeframe_left_img: Image<'_, Qoi<'_>> = Image::new(&eyeframe_left_qoi, Point::new(0,0));
@@ -432,21 +319,11 @@ async fn main(spawner: Spawner) {
     let right_pupil_ctr: Point = Point::new(148,159);
     let iris_diam = 122;
     let pupil_diam = iris_diam / 2;
-    let ideal_iris_ctr = Point::new(iris_diam / 2, iris_diam / 2);
-
     let highlight_diam = 30;
-    // let iris_radius: i32 = iris_diam / 2;
-    // let left_iris_tl = Point::new(left_pupil_ctr.x - iris_radius, left_pupil_ctr.y - iris_radius + 25);
 
     let mut iris_dirty = true ;
-    // info!("Config done");
+    let mut bg_dirty = true;
 
-    // draw initial background at startup
-    redraw_one_bg(&mut left_display, disp0_frame_buf, &eyeframe_left_img).await;
-    redraw_one_bg(&mut right_display, disp1_frame_buf, &eyeframe_right_img).await;
-
-    // redraw_symmetric_bg(&mut left_display, &mut right_display, disp1_frame_buf, &eyeframe_left_img).await;
-    
     // Enable LCD backlight
     bl0_pwm_out.set_duty_cycle_percent(25).unwrap();
     bl1_pwm_out.set_duty_cycle_percent(25).unwrap();
@@ -454,9 +331,13 @@ async fn main(spawner: Spawner) {
     let mut loop_count: usize = 0;
     let iris_colors = [ Rgb565::CSS_BLUE_VIOLET, Rgb565::CSS_DARK_MAGENTA, Rgb565::CSS_YELLOW_GREEN, Rgb565::CSS_MEDIUM_VIOLET_RED, Rgb565::CSS_PALE_VIOLET_RED];
     
-    let mut brightness_percent = 10;
+    info!("Config done");
+
+
+    let mut brightness_percent = 5;
     let mut brightness_ascending: bool = true;
     let mut old_mode_val: usize = 555;
+
     // Main drawing loop, runs forever
     loop {
         led.set_high();
@@ -472,20 +353,21 @@ async fn main(spawner: Spawner) {
         if old_mode_val != mode_val {
             old_mode_val = mode_val;
             iris_dirty = true;
+            bg_dirty = true;
         }
 
-        // TODO brightness cycling based on mode
+        // TODO brightness cycling based on mode?
         if brightness_ascending {
-            brightness_percent += 10;
+            brightness_percent += 1;
             if brightness_percent >= 100 {
                 brightness_percent = 100;
                 brightness_ascending = false;
             }
         }
         else {
-            brightness_percent -= 10;
-            if brightness_percent <= 10 { 
-                brightness_percent = 10;
+            brightness_percent -= 1;
+            if brightness_percent == 0 { 
+                brightness_percent = 5;
                 brightness_ascending = true; 
             }
         }
@@ -493,81 +375,36 @@ async fn main(spawner: Spawner) {
         bl0_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
         bl1_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
 
-        //Draw right eye
-        if iris_dirty {
-            let mut raw_fb =
-                RawFrameBuf::<Rgb565, _>::new(disp1_frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
-            draw_inner_eye(&mut raw_fb, &right_pupil_ctr, iris_diam, pupil_diam,iris_color).unwrap();
-            // while the large frame buf has the right bg stuff in it, copy the small inner fbuf
-            let mut inner_buf_dst = inner_eye_fbuf.as_mut_slice();
-            copy_centered_region_chunks(
-                &disp1_frame_buf.as_slice(),
-                &mut inner_buf_dst, 
-                DISPLAY_WIDTH as usize , 
-                INNER_EYE_FBUF_W as usize, INNER_EYE_FBUF_H as usize, 
-                &right_pupil_ctr);
-
-            right_display
-                .show_raw_data(0, 0, 
-                    DISPLAY_WIDTH, DISPLAY_HEIGHT, 
-                    disp1_frame_buf)
-                .await
-                .unwrap();
-            
-            let mut inner_eye_rgb565_fbuf  =
-                RawFrameBuf::<Rgb565, _>::new(inner_eye_fbuf.as_mut_slice(), INNER_EYE_FBUF_W as usize, INNER_EYE_FBUF_H as usize);
-            draw_asymmetric_inner_eye(&mut inner_eye_rgb565_fbuf, false, &ideal_iris_ctr, pupil_diam, highlight_diam);
-
-            let dst_frame_x:u16 = (right_pupil_ctr.x - INNER_EYE_FBUF_W as i32/2).try_into().unwrap();
-            let dst_frame_y:u16 = (right_pupil_ctr.y - INNER_EYE_FBUF_H as i32/2).try_into().unwrap();
-            right_display.show_raw_data(dst_frame_x, dst_frame_y, 
-                    INNER_EYE_FBUF_W,  INNER_EYE_FBUF_H, 
-                    inner_eye_fbuf)
-                .await
-                .unwrap();
-            
+        if bg_dirty {
+            render_one_bg_image(disp0_frame_buf, &eyeframe_left_img);
+            render_one_bg_image(disp1_frame_buf, &eyeframe_right_img);
+            bg_dirty = false;
         }
 
-        // Draw left eye
+       
         if iris_dirty {
-            let mut raw_fb =
-                RawFrameBuf::<Rgb565, _>::new(disp0_frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
-            draw_inner_eye(&mut raw_fb, &left_pupil_ctr, iris_diam, pupil_diam, iris_color).unwrap();
-            // while the large frame buf has the correct bg stuff in it, copy the small inner fbuf
-            let mut inner_buf_dst = inner_eye_fbuf.as_mut_slice();
-            copy_centered_region_chunks(
-                &disp0_frame_buf.as_slice(),
-                &mut inner_buf_dst, 
-                DISPLAY_WIDTH as usize , 
-                INNER_EYE_FBUF_W as usize, INNER_EYE_FBUF_H as usize, 
-                &left_pupil_ctr);
+            // Draw both eyes
+            draw_one_full_eye(true, disp0_frame_buf, &left_pupil_ctr, pupil_diam, iris_diam, iris_color, highlight_diam);
+            draw_one_full_eye(false, disp1_frame_buf, &right_pupil_ctr, pupil_diam, iris_diam, iris_color, highlight_diam);
 
+            // push both framebuffers to their respective displays
+            iris_dirty = false;
             left_display
                 .show_raw_data(0, 0, 
                     DISPLAY_WIDTH, DISPLAY_HEIGHT, 
                     disp0_frame_buf)
                 .await
                 .unwrap();
-
-            let mut inner_eye_rgb565_fbuf  =
-                RawFrameBuf::<Rgb565, _>::new(inner_eye_fbuf.as_mut_slice(), INNER_EYE_FBUF_W as usize, INNER_EYE_FBUF_H as usize);
-            
-            draw_asymmetric_inner_eye(&mut inner_eye_rgb565_fbuf, true, &ideal_iris_ctr, pupil_diam, highlight_diam);
-
-            let dst_frame_x:u16 = (left_pupil_ctr.x - INNER_EYE_FBUF_W as i32/2).try_into().unwrap();
-            let dst_frame_y:u16 = (left_pupil_ctr.y - INNER_EYE_FBUF_H as i32/2).try_into().unwrap();
-            left_display.show_raw_data(dst_frame_x, dst_frame_y, 
-                    INNER_EYE_FBUF_W,  INNER_EYE_FBUF_H, 
-                    inner_eye_fbuf)
+            right_display
+                .show_raw_data(0, 0, 
+                    DISPLAY_WIDTH, DISPLAY_HEIGHT, 
+                    disp1_frame_buf)
                 .await
                 .unwrap();
         }
-
-
-        if !iris_dirty {
-            Timer::after_millis(250).await;
+        else{
+            Timer::after_millis(17).await;
         }
-        iris_dirty = false;
 
         loop_count += 1;
         led.set_low();
