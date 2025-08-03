@@ -14,11 +14,11 @@ use embassy_rp:: {
     self as hal, block::ImageDef,  gpio::{Input, Level, Output, Pull}, pwm::{self, Pwm, SetDutyCycle}, spi::{self, Async, Spi}
 };
 
-use embassy_sync::{blocking_mutex::raw::{self, NoopRawMutex}, mutex::Mutex};
+use embassy_sync::{blocking_mutex::raw::{NoopRawMutex}, mutex::Mutex};
 use embassy_time::{Delay, Timer};
 
 use embedded_graphics::{
-    image::Image, pixelcolor::Rgb565, prelude::{DrawTargetExt, *}, primitives::{Arc, Circle, Primitive, PrimitiveStyle, Rectangle, Styled}
+    image::Image, pixelcolor::Rgb565, prelude::{DrawTargetExt, *}, primitives::{Arc, Circle, Primitive, PrimitiveStyle, Sector, Styled}
 };
 
 use static_cell::StaticCell;
@@ -128,7 +128,15 @@ where
     Circle::with_center(*pupil_ctr, iris_diam_dim)
         .into_styled(PrimitiveStyle::with_fill(iris_color))
         .draw(display)?;
- 
+
+    // shaded iris
+    let shaded_iris_color = Rgb565::new(iris_color.r()/2, iris_color.g()/2, iris_color.b()/2);
+    let iris_shade_start = Angle::from_degrees(-15.0);
+    let iris_shade_sweep = Angle::from_degrees(-180.0 + 15.0) - iris_shade_start;
+    Sector::with_center(*pupil_ctr, iris_diam_dim, iris_shade_start, iris_shade_sweep)
+        .into_styled(PrimitiveStyle::with_fill(shaded_iris_color))
+        .draw(display)?;
+
     // pupil
     Circle::with_center(*pupil_ctr, pupil_diam_dim )
         .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
@@ -233,7 +241,7 @@ async fn main(spawner: Spawner) {
     let total_fbuf_size = 2*FRAME_SIZE_BYTES ; //+ INNER_EYE_FBUF_SIZE_BYTES;
     info!("Start Config total_fbuf_size = {}",total_fbuf_size);
 
-    MODE_SETTING.store(NUM_A_MODES-1, Ordering::Relaxed);
+    MODE_SETTING.store(0, Ordering::Relaxed);
 
     let pin = Input::new(p.PIN_22, Pull::Up);
     unwrap!(spawner.spawn(gpio_task(pin)));
