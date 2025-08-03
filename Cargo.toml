@@ -24,6 +24,7 @@ embassy-rp = { version = "0.6.0",  features = ["defmt", "unstable-pac", "time-dr
 embedded-graphics = "0.8.1"
 lcd-async = "0.1.1"
 
+rand = {version="0.9",default-features = false }
 tinyqoi = "0.2.0"
 static_cell = { version = "2.1.1" }
 portable-atomic = { version = "1.11.1", features = ["critical-section"] }

@@ -1,27 +1,24 @@
 #![no_std]
 #![no_main]
 
-use embassy_rp as hal;
-use embassy_rp::block::ImageDef;
 use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
+// use rp235x_hal::rosc::RingOscillator;
 use core::default::Default;
 use portable_atomic::{AtomicUsize, Ordering};
 
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_executor::{Spawner};
 use embassy_rp:: {
-    gpio::{Input, Level, Output, Pull}, pwm::{self, Pwm, SetDutyCycle}, spi::{self, Async, Spi}
+    self as hal, block::ImageDef,  gpio::{Input, Level, Output, Pull}, pwm::{self, Pwm, SetDutyCycle}, spi::{self, Async, Spi}
 };
 
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+use embassy_sync::{blocking_mutex::raw::{self, NoopRawMutex}, mutex::Mutex};
 use embassy_time::{Delay, Timer};
 
 use embedded_graphics::{
-    prelude::DrawTargetExt,
-    image::Image, pixelcolor::Rgb565, prelude::*, 
-    primitives::{Arc, Circle, Primitive, PrimitiveStyle, Styled}
+    image::Image, pixelcolor::Rgb565, prelude::{DrawTargetExt, *}, primitives::{Arc, Circle, Primitive, PrimitiveStyle, Rectangle, Styled}
 };
 
 use static_cell::StaticCell;
@@ -49,14 +46,13 @@ pub static IMAGE_DEF: ImageDef = hal::block::ImageDef::secure_exe();
 pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
     embassy_rp::binary_info::rp_program_name!(c"Kerplonk"),
     embassy_rp::binary_info::rp_program_description!(
-        c"Testing drawing with dual displays"
+        c"Testing drawing with dual displays" 
     ),
     embassy_rp::binary_info::rp_cargo_version!(),
     embassy_rp::binary_info::rp_program_build_attribute!(),
 ];
 
 
-const NUM_MODES: usize = 2;
 const DISPLAY_FREQ: u32 = 64_000_000;
 
 const DISPLAY_WIDTH: u16 =  320; 
@@ -68,6 +64,22 @@ type FullFrameBuf = [u8; FRAME_SIZE_BYTES];
 const FARPOINT_CENTER: Point = Point::new(160, 240);
 
 const EYELASH_DIAMETER: u32 = 310u32;
+
+const NUM_A_MODES: usize = 4;
+
+const IRIS_PALETTE_PURPLE: [Rgb565; 8] = [ 
+    Rgb565::CSS_INDIGO, 
+    Rgb565::CSS_REBECCAPURPLE,  
+    Rgb565::CSS_DARK_ORCHID,
+    Rgb565::CSS_BLUE_VIOLET,
+    Rgb565::CSS_MEDIUM_PURPLE,
+    Rgb565::CSS_MEDIUM_ORCHID,
+    Rgb565::CSS_VIOLET,
+    Rgb565::CSS_PLUM,
+
+];
+const IRIS_PALETTE_SPECTRUM: [Rgb565; 6] = [ Rgb565::CSS_BLUE_VIOLET, Rgb565::CSS_DARK_MAGENTA,  Rgb565::CSS_MEDIUM_VIOLET_RED, Rgb565::CSS_PALE_VIOLET_RED, Rgb565::CSS_YELLOW_GREEN, Rgb565::CSS_LIME_GREEN];
+
 
 static DISPLAY0_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 static DISPLAY1_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
@@ -145,12 +157,13 @@ fn draw_asymmetric_inner_eye<T>(
 where
     T: DrawTarget<Color = Rgb565>,
 {   
+    const HIGHLIGHT_Y_SHIFT: i32 = 8;
     let pupil_radius = pupil_diam / 2;
     let highlight_diam_dim: u32 = highlight_diam.try_into().unwrap();
 
     // two highlights are symmetric about the pupil center
-    let highlight_ctr = Point::new(eye_ctr.x - pupil_radius,  eye_ctr.y - pupil_radius/2 - 2 );
-    let small_highlight_ctr = Point::new(eye_ctr.x + pupil_radius, eye_ctr.y + pupil_radius/2 +2);
+    let highlight_ctr = Point::new(eye_ctr.x - pupil_radius,  (eye_ctr.y - pupil_radius/2) - HIGHLIGHT_Y_SHIFT );
+    let small_highlight_ctr = Point::new(eye_ctr.x + pupil_radius, (eye_ctr.y + pupil_radius/2) + HIGHLIGHT_Y_SHIFT);
 
     // lens highlight large
     let _ = Circle::with_center(highlight_ctr, highlight_diam_dim )
@@ -166,8 +179,10 @@ where
 
 fn draw_one_full_eye(is_left: bool, frame_buf: &mut FullFrameBuf, pupil_ctr: &Point, pupil_diam: i32, iris_diam: i32,  iris_color: Rgb565, highlight_diam: i32) {
     let mut raw_fb =
-    RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
-    draw_symmetric_inner_eye(&mut raw_fb, &pupil_ctr, iris_diam, pupil_diam,iris_color).unwrap();
+        RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
+    // let crop_rect = Rectangle::with_center(*pupil_ctr, Size::new(DISPLAY_WIDTH as u32, (DISPLAY_HEIGHT as u32)/2));
+    // let mut cropped_fb = raw_fb.cropped(&crop_rect);
+    draw_symmetric_inner_eye(&mut raw_fb, &pupil_ctr, iris_diam, pupil_diam, iris_color).unwrap();
     draw_asymmetric_inner_eye(&mut raw_fb, is_left , &pupil_ctr, pupil_diam, highlight_diam);
 }
 
@@ -205,7 +220,7 @@ async fn gpio_task(mut pin: Input<'static>) {
         Timer::after_millis(10).await; 
 
         if pin.is_low() {
-            mode_val = (mode_val + 1) % NUM_MODES;
+            mode_val = (mode_val + 1) % NUM_A_MODES;
             MODE_SETTING.store(mode_val, Ordering::Relaxed);
         }
     }
@@ -213,11 +228,12 @@ async fn gpio_task(mut pin: Input<'static>) {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    // let mut pac = rp235x_pac::Peripherals::take().unwrap();
     let p = embassy_rp::init(Default::default());
     let total_fbuf_size = 2*FRAME_SIZE_BYTES ; //+ INNER_EYE_FBUF_SIZE_BYTES;
     info!("Start Config total_fbuf_size = {}",total_fbuf_size);
 
-    MODE_SETTING.store(0, Ordering::Relaxed);
+    MODE_SETTING.store(NUM_A_MODES-1, Ordering::Relaxed);
 
     let pin = Input::new(p.PIN_22, Pull::Up);
     unwrap!(spawner.spawn(gpio_task(pin)));
@@ -289,7 +305,6 @@ async fn main(spawner: Spawner) {
     let rst1_out = Output::new(rst1, Level::Low);
 
     // LCD backlight -- initially off
-    // let mut bl1_out = Output::new(bl1, Level::Low);
     let mut bl1_pwm_out: Pwm<'_> = Pwm::new_output_a(p.PWM_SLICE7, bl1, pwm::Config::default());
 
     // display interface abstraction from SPI and DC
@@ -315,8 +330,8 @@ async fn main(spawner: Spawner) {
     let eyeframe_right_qoi = Qoi::new(include_bytes!("../img/eye-frame-right-olive.qoi")).unwrap();
     let eyeframe_right_img: Image<'_, Qoi<'_>> = Image::new(&eyeframe_right_qoi, Point::new(0,0));
 
-    let left_pupil_ctr: Point = Point::new((DISPLAY_WIDTH-148).into(),159);
-    let right_pupil_ctr: Point = Point::new(148,159);
+    let left_pupil_ctr: Point = Point::new((DISPLAY_WIDTH-148) as i32,159) ; //- Size::new(0, DISPLAY_HEIGHT as u32 / 2);
+    let right_pupil_ctr: Point = Point::new(148,159); //  - Size::new(0, DISPLAY_HEIGHT as u32 / 2);
     let iris_diam = 122;
     let pupil_diam = iris_diam / 2;
     let highlight_diam = 30;
@@ -329,10 +344,10 @@ async fn main(spawner: Spawner) {
     bl1_pwm_out.set_duty_cycle_percent(25).unwrap();
 
     let mut loop_count: usize = 0;
-    let iris_colors = [ Rgb565::CSS_BLUE_VIOLET, Rgb565::CSS_DARK_MAGENTA, Rgb565::CSS_YELLOW_GREEN, Rgb565::CSS_MEDIUM_VIOLET_RED, Rgb565::CSS_PALE_VIOLET_RED];
     
-    info!("Config done");
+    let mut rnd_src = embassy_rp::clocks::RoscRng;
 
+    info!("Config done");
 
     let mut brightness_percent = 5;
     let mut brightness_ascending: bool = true;
@@ -340,14 +355,26 @@ async fn main(spawner: Spawner) {
 
     // Main drawing loop, runs forever
     loop {
-        led.set_high();
+        led.set_low();
         let mode_val = MODE_SETTING.load(Ordering::Relaxed);
 
          let iris_color =
             if mode_val == 0 { Rgb565::CSS_MAGENTA }
-            else { 
+            else if mode_val == 1 {
                 iris_dirty = true;
-                iris_colors[loop_count % iris_colors.len()]
+                let color_idx = loop_count % IRIS_PALETTE_SPECTRUM.len();
+                IRIS_PALETTE_SPECTRUM[color_idx]
+            }
+            else if mode_val == 2 {
+                iris_dirty = true;
+                let color_idx = loop_count % IRIS_PALETTE_PURPLE.len();
+                IRIS_PALETTE_PURPLE[color_idx]  
+            }
+            else {
+                let mut rng_bytes:[u8;3] = [0; 3];
+                iris_dirty = true;
+                rnd_src.fill_bytes(&mut rng_bytes);
+                Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2])
              };
 
         if old_mode_val != mode_val {
@@ -376,19 +403,18 @@ async fn main(spawner: Spawner) {
         bl1_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
 
         if bg_dirty {
+            // re-render the eye background images
             render_one_bg_image(disp0_frame_buf, &eyeframe_left_img);
             render_one_bg_image(disp1_frame_buf, &eyeframe_right_img);
             bg_dirty = false;
         }
 
-       
         if iris_dirty {
             // Draw both eyes
             draw_one_full_eye(true, disp0_frame_buf, &left_pupil_ctr, pupil_diam, iris_diam, iris_color, highlight_diam);
             draw_one_full_eye(false, disp1_frame_buf, &right_pupil_ctr, pupil_diam, iris_diam, iris_color, highlight_diam);
 
             // push both framebuffers to their respective displays
-            iris_dirty = false;
             left_display
                 .show_raw_data(0, 0, 
                     DISPLAY_WIDTH, DISPLAY_HEIGHT, 
@@ -402,11 +428,16 @@ async fn main(spawner: Spawner) {
                 .await
                 .unwrap();
         }
-        else{
+
+        led.set_high();
+
+        if iris_dirty {
+            iris_dirty = false;
+        }
+        else {
             Timer::after_millis(17).await;
         }
 
         loop_count += 1;
-        led.set_low();
     }
 }
