@@ -14,11 +14,11 @@ use embassy_rp:: {
     self as hal, block::ImageDef,  gpio::{Input, Level, Output, Pull}, pwm::{self, Pwm, SetDutyCycle}, spi::{self, Async, Spi}
 };
 
-use embassy_sync::{blocking_mutex::raw::{NoopRawMutex}, mutex::Mutex};
+use embassy_sync::{blocking_mutex::raw::{self, NoopRawMutex}, mutex::Mutex};
 use embassy_time::{Delay, Timer};
 
 use embedded_graphics::{
-    image::Image, pixelcolor::Rgb565, prelude::{DrawTargetExt, *}, primitives::{Arc, Circle, Ellipse, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Sector, Styled, StyledDrawable}
+    image::Image, pixelcolor::Rgb565, prelude::{DrawTargetExt, *}, primitives::{Arc, Circle, Ellipse, Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, Sector, Styled, StyledDrawable}
 };
 
 use static_cell::StaticCell;
@@ -61,6 +61,11 @@ const PIXEL_SIZE: u16 = 2; // RGB565 = 2 bytes per pixel
 const FRAME_SIZE_BYTES: usize = DISPLAY_WIDTH as usize * DISPLAY_HEIGHT as usize * PIXEL_SIZE as usize;
 type FullFrameBuf = [u8; FRAME_SIZE_BYTES];
 
+const IRIS_DIAM: u16 = 122;
+const PUPIL_DIAM: u16 = IRIS_DIAM/2;
+
+const INNER_EYE_DIM: u16 = IRIS_DIAM + 4;
+
 const FARPOINT_CENTER: Point = Point::new(160, 240);
 
 const EYELASH_DIAMETER: u32 = 310u32;
@@ -95,6 +100,14 @@ fn render_one_bg_image(
     let mut raw_fb =
         RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
     bg_img.draw(&mut raw_fb.color_converted()).unwrap(); 
+
+    build_styled_arc(FARPOINT_CENTER + Size::new(0,30), EYELASH_DIAMETER+30, 
+        -45.0, -90.0, Rgb565::CYAN, 8).draw(&mut raw_fb).unwrap();
+
+    // eyelash outer
+    build_styled_arc(FARPOINT_CENTER, EYELASH_DIAMETER, 
+        -35.0, -110.0, Rgb565::CSS_INDIGO, 12).draw(&mut raw_fb).unwrap();
+
 }
 
 fn build_styled_arc(center: Point, diam: u32, start_deg: f32, sweep_deg: f32, color: Rgb565, stroke_width: u32) -> Styled<Arc, PrimitiveStyle<Rgb565>> {
@@ -121,6 +134,11 @@ where
 {   
     let pupil_diam_dim: u32 = pupil_diam.try_into().unwrap();
     let iris_diam_dim: u32 = iris_diam.try_into().unwrap();
+
+    // temporary -- render an idealized inner eye clipping region
+    let _ = Rectangle::with_center(*pupil_ctr, Size::new(INNER_EYE_DIM.into(),INNER_EYE_DIM.into()))
+    .into_styled(PrimitiveStyle::with_stroke(Rgb565::CSS_YELLOW, 3))
+    .draw(display);
 
     // fill with bg color
     let _ = Circle::with_center(*pupil_ctr, iris_diam_dim + 15) 
@@ -178,28 +196,27 @@ where
         -45.0, -90.0, Rgb565::CYAN, 8).draw(display)?;
 
     // eyelash outer
-    build_styled_arc(FARPOINT_CENTER, EYELASH_DIAMETER, 
-        -35.0, -110.0, Rgb565::CSS_INDIGO, 12).draw(display)?;
+    // build_styled_arc(FARPOINT_CENTER, EYELASH_DIAMETER, 
+    //     -35.0, -110.0, Rgb565::CSS_INDIGO, 12).draw(display)?;
 
     const HIGHLIGHT_X_SHIFT: i32 = 8;
     const HIGHLIGHT_Y_SHIFT: i32 = 4;
     let pupil_half_width = pupil_size.width as i32 / 2;
     let pupil_half_height = pupil_size.height as i32 / 2;
-    let highlight_diam_dim: u32 = highlight_diam as u32;
 
     // two highlights are symmetric about the pupil center
     let highlight_ctr = Point::new(offset_pupil_ctr.x - pupil_half_width + HIGHLIGHT_X_SHIFT,  (offset_pupil_ctr.y - pupil_half_height) + HIGHLIGHT_Y_SHIFT );
     let small_highlight_ctr = Point::new(offset_pupil_ctr.x + pupil_half_width - HIGHLIGHT_X_SHIFT, (offset_pupil_ctr.y + pupil_half_height) - HIGHLIGHT_Y_SHIFT);
 
     // lens highlight large
-    let _ = Circle::with_center(highlight_ctr, highlight_diam_dim )
+    Ellipse::with_center(highlight_ctr, pupil_size/2)
         .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
-        .draw(display);
+        .draw(display)?; 
 
-    // lens highlight small
-    let _ = Circle::with_center(small_highlight_ctr, highlight_diam_dim/2) 
+    // lens highlight small 
+    Ellipse::with_center(small_highlight_ctr, pupil_size/4)
         .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
-        .draw(display);
+        .draw(display)?; 
 
     Ok(())
 }
@@ -350,7 +367,7 @@ async fn main(spawner: Spawner) {
     let pin = Input::new(p.PIN_22, Pull::Up);
     unwrap!(spawner.spawn(gpio_task(pin)));
     
-    let mut led = Output::new(p.PIN_25, Level::Low);
+    let mut led = Output::new(p.PIN_25, Level::High);
 
     // LCD display 0: ST7789V pins
     let bl0 = p.PIN_7; // --> BL
@@ -444,8 +461,8 @@ async fn main(spawner: Spawner) {
 
     let left_pupil_ctr: Point = Point::new((DISPLAY_WIDTH-148) as i32,159) ; //- Size::new(0, DISPLAY_HEIGHT as u32 / 2);
     let right_pupil_ctr: Point = Point::new(148,159); //  - Size::new(0, DISPLAY_HEIGHT as u32 / 2);
-    let iris_diam = 122;
-    let pupil_diam = iris_diam / 2;
+    let iris_diam = IRIS_DIAM.into();
+    let pupil_diam = PUPIL_DIAM.into();
     let highlight_diam = 30;
 
     let mut iris_dirty = true ;
@@ -465,7 +482,6 @@ async fn main(spawner: Spawner) {
     let mut brightness_ascending: bool = true;
     let mut old_mode_val: usize = 555;
 
-    let mut look_correction:f32 = 1.0;
     // Main drawing loop, runs forever
     loop {
         led.set_low();
@@ -473,6 +489,9 @@ async fn main(spawner: Spawner) {
 
         let mut rng_bytes:[u8;4] = [0; 4];
         rnd_src.fill_bytes(&mut rng_bytes);
+
+        let mut look_step = rng_bytes[3] % 3;
+
 
          let iris_color =
             if mode_val == 0 { 
@@ -485,10 +504,12 @@ async fn main(spawner: Spawner) {
             else if mode_val == 2 {
                 iris_dirty = true;
                 let color_idx = loop_count % IRIS_PALETTE_SPECTRUM.len();
+                Timer::after_millis(100).await;
                 IRIS_PALETTE_SPECTRUM[color_idx]
             }
             else if mode_val == 3 {
                 iris_dirty = true;
+                look_step = (loop_count % 3).try_into().unwrap();
                 let color_idx = loop_count % IRIS_PALETTE_PURPLE.len();
                 IRIS_PALETTE_PURPLE[color_idx]  
             }
@@ -526,10 +547,10 @@ async fn main(spawner: Spawner) {
             // re-render the eye background images
             render_one_bg_image(disp0_frame_buf, &eyeframe_left_img);
             render_one_bg_image(disp1_frame_buf, &eyeframe_right_img);
-            bg_dirty = false;
+                // eyelash inner (liner)
+
         }
 
-        let look_step = rng_bytes[3] % 3;
         let look_correction = match look_step {
             1 => 0.95,
             2 => -0.95,
@@ -560,11 +581,12 @@ async fn main(spawner: Spawner) {
 
         if iris_dirty {
             iris_dirty = false;
+            // Timer::after_millis(5).await;
         }
         else {
             Timer::after_millis(17).await;
         }
-
+        bg_dirty = false;
         loop_count += 1;
     }
 }
