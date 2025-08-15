@@ -22,6 +22,7 @@ MEMORY {
     SRAM9 : ORIGIN = 0x20081000, LENGTH = 4K
 }
 
+
 SECTIONS {
     /* ### Boot ROM info
      *
@@ -71,6 +72,17 @@ SECTIONS {
     } > FLASH
 
 } INSERT AFTER .uninit;
+
+SECTIONS
+{
+  /* Other sections... */
+
+  /* Define a section for your custom stack, linked to the defined memory region */
+  .core1_stack :
+  {
+    *(.core1_stack);
+  } > SRAM9
+}
 
 PROVIDE(start_to_end = __end_block_addr - __start_block_addr);
 PROVIDE(end_to_start = __start_block_addr - __end_block_addr);
