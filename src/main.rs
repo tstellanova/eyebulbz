@@ -15,10 +15,10 @@ use embassy_rp:: {
 };
 
 use embassy_sync::{blocking_mutex::raw::{self, NoopRawMutex}, mutex::Mutex};
-use embassy_time::{Delay, Timer};
+use embassy_time::{Delay, Instant, Timer};
 
 use embedded_graphics::{
-    image::Image, pixelcolor::Rgb565, prelude::{DrawTargetExt, *}, primitives::{Arc, Circle, Ellipse, Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, Sector, Styled, StyledDrawable}
+    image::{Image, ImageRaw}, pixelcolor::{Rgb565}, prelude::{DrawTargetExt, *}, primitives::{Arc, Circle, Ellipse, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, Styled}
 };
 
 use static_cell::StaticCell;
@@ -32,6 +32,7 @@ use lcd_async::{
 };
 
 use tinyqoi::Qoi;
+
 use {defmt_rtt as _, panic_probe as _};
 
 /// Tell the Boot ROM about our application
@@ -89,13 +90,15 @@ const IRIS_PALETTE_SPECTRUM: [Rgb565; 6] = [ Rgb565::CSS_BLUE_VIOLET, Rgb565::CS
 static DISPLAY0_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 static DISPLAY1_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 
-static MODE_SETTING: AtomicUsize = AtomicUsize::new(0);
+static MODE_SETTING: AtomicUsize = AtomicUsize::new(3);
 
 // type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
 
-fn render_one_bg_image(
+
+fn render_one_bg_image<T>(
     frame_buf: &mut FullFrameBuf, 
-    bg_img: &Image<'_, Qoi<'_>>) 
+    bg_img: &Image<'_, T>) 
+    where T: ImageDrawable,  Rgb565: From<<T as embedded_graphics::image::ImageDrawable>::Color>
 {       
     let mut raw_fb =
         RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
@@ -126,7 +129,7 @@ fn draw_elliptic_inner_eye<T>(
     iris_diam: i32, 
     pupil_diam: i32, 
     iris_color: Rgb565,
-    highlight_diam: i32,
+    _highlight_diam: i32,
     look_correction: f32,
 ) -> Result<(), T::Error>
 where
@@ -222,88 +225,88 @@ where
 }
 
 
-fn draw_symmetric_inner_eye<T>(
-    display: &mut T, 
-    pupil_ctr: &Point, 
-    iris_diam: i32, 
-    pupil_diam: i32, 
-    iris_color: Rgb565) -> Result<(), T::Error>
-where
-    T: DrawTarget<Color = Rgb565>,
-{   
-    let pupil_diam_dim: u32 = pupil_diam.try_into().unwrap();
-    let iris_diam_dim: u32 = iris_diam.try_into().unwrap();
+// fn draw_symmetric_inner_eye<T>(
+//     display: &mut T, 
+//     pupil_ctr: &Point, 
+//     iris_diam: i32, 
+//     pupil_diam: i32, 
+//     iris_color: Rgb565) -> Result<(), T::Error>
+// where
+//     T: DrawTarget<Color = Rgb565>,
+// {   
+//     let pupil_diam_dim: u32 = pupil_diam.try_into().unwrap();
+//     let iris_diam_dim: u32 = iris_diam.try_into().unwrap();
 
-    let iris_style = PrimitiveStyleBuilder::new()
-        .stroke_width(2)
-        .stroke_color(Rgb565::BLACK)
-        .fill_color(iris_color)
-        .build();
+//     let iris_style = PrimitiveStyleBuilder::new()
+//         .stroke_width(2)
+//         .stroke_color(Rgb565::BLACK)
+//         .fill_color(iris_color)
+//         .build();
 
-    // // behind iris
-    // Circle::with_center(*pupil_ctr, iris_diam_dim + 4)
-    //     .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-    //     .draw(display)?;
+//     // // behind iris
+//     // Circle::with_center(*pupil_ctr, iris_diam_dim + 4)
+//     //     .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+//     //     .draw(display)?;
 
-    // iris
-    Circle::with_center(*pupil_ctr, iris_diam_dim)
-        .into_styled(iris_style)
-        .draw(display)?;
+//     // iris
+//     Circle::with_center(*pupil_ctr, iris_diam_dim)
+//         .into_styled(iris_style)
+//         .draw(display)?;
 
-    // shaded iris
-    let shaded_iris_color = Rgb565::new(iris_color.r()/2, iris_color.g()/2, iris_color.b()/2);
-    let iris_shade_start = Angle::from_degrees(-15.0);
-    let iris_shade_sweep = Angle::from_degrees(-180.0 + 15.0) - iris_shade_start;
-    Sector::with_center(*pupil_ctr, iris_diam_dim, iris_shade_start, iris_shade_sweep)
-        .into_styled(PrimitiveStyle::with_fill(shaded_iris_color))
-        .draw(display)?;
+//     // shaded iris
+//     let shaded_iris_color = Rgb565::new(iris_color.r()/2, iris_color.g()/2, iris_color.b()/2);
+//     let iris_shade_start = Angle::from_degrees(-15.0);
+//     let iris_shade_sweep = Angle::from_degrees(-180.0 + 15.0) - iris_shade_start;
+//     Sector::with_center(*pupil_ctr, iris_diam_dim, iris_shade_start, iris_shade_sweep)
+//         .into_styled(PrimitiveStyle::with_fill(shaded_iris_color))
+//         .draw(display)?;
 
-    // pupil
-    Circle::with_center(*pupil_ctr, pupil_diam_dim )
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-        .draw(display)?;
+//     // pupil
+//     Circle::with_center(*pupil_ctr, pupil_diam_dim )
+//         .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+//         .draw(display)?;
 
-    // draw stuff that shades iris
-    // eyelash inner (liner)
-    build_styled_arc(FARPOINT_CENTER + Size::new(0,30), EYELASH_DIAMETER+30, 
-        -45.0, -90.0, Rgb565::CYAN, 8).draw(display)?;
+//     // draw stuff that shades iris
+//     // eyelash inner (liner)
+//     build_styled_arc(FARPOINT_CENTER + Size::new(0,30), EYELASH_DIAMETER+30, 
+//         -45.0, -90.0, Rgb565::CYAN, 8).draw(display)?;
 
-    // eyelash outer
-    build_styled_arc(FARPOINT_CENTER, EYELASH_DIAMETER, 
-        -35.0, -110.0, Rgb565::CSS_INDIGO, 12).draw(display)?;
+//     // eyelash outer
+//     build_styled_arc(FARPOINT_CENTER, EYELASH_DIAMETER, 
+//         -35.0, -110.0, Rgb565::CSS_INDIGO, 12).draw(display)?;
 
-    Ok(())
-}
+//     Ok(())
+// }
 
-fn draw_asymmetric_inner_eye<T>(
-    display: &mut T, 
-    _is_left: bool, 
-    eye_ctr: &Point,  
-    pupil_diam: i32, 
-    highlight_diam: i32,
-)
-where
-    T: DrawTarget<Color = Rgb565>,
-{   
-    const HIGHLIGHT_Y_SHIFT: i32 = 8;
-    let pupil_radius = pupil_diam / 2;
-    let highlight_diam_dim: u32 = highlight_diam.try_into().unwrap();
+// fn draw_asymmetric_inner_eye<T>(
+//     display: &mut T, 
+//     _is_left: bool, 
+//     eye_ctr: &Point,  
+//     pupil_diam: i32, 
+//     highlight_diam: i32,
+// )
+// where
+//     T: DrawTarget<Color = Rgb565>,
+// {   
+//     const HIGHLIGHT_Y_SHIFT: i32 = 8;
+//     let pupil_radius = pupil_diam / 2;
+//     let highlight_diam_dim: u32 = highlight_diam.try_into().unwrap();
 
-    // two highlights are symmetric about the pupil center
-    let highlight_ctr = Point::new(eye_ctr.x - pupil_radius,  (eye_ctr.y - pupil_radius/2) - HIGHLIGHT_Y_SHIFT );
-    let small_highlight_ctr = Point::new(eye_ctr.x + pupil_radius, (eye_ctr.y + pupil_radius/2) + HIGHLIGHT_Y_SHIFT);
+//     // two highlights are symmetric about the pupil center
+//     let highlight_ctr = Point::new(eye_ctr.x - pupil_radius,  (eye_ctr.y - pupil_radius/2) - HIGHLIGHT_Y_SHIFT );
+//     let small_highlight_ctr = Point::new(eye_ctr.x + pupil_radius, (eye_ctr.y + pupil_radius/2) + HIGHLIGHT_Y_SHIFT);
 
-    // lens highlight large
-    let _ = Circle::with_center(highlight_ctr, highlight_diam_dim )
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
-        .draw(display);
+//     // lens highlight large
+//     let _ = Circle::with_center(highlight_ctr, highlight_diam_dim )
+//         .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+//         .draw(display);
 
-    // lens highlight small
-    let _ = Circle::with_center(small_highlight_ctr, highlight_diam_dim/2) 
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
-        .draw(display);
+//     // lens highlight small
+//     let _ = Circle::with_center(small_highlight_ctr, highlight_diam_dim/2) 
+//         .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+//         .draw(display);
 
-}
+// }
 
 fn draw_one_full_eye(frame_buf: &mut FullFrameBuf, look_correction: f32, pupil_ctr: &Point, pupil_diam: i32, iris_diam: i32,  iris_color: Rgb565, highlight_diam: i32) {
     let mut raw_fb =
@@ -315,25 +318,6 @@ fn draw_one_full_eye(frame_buf: &mut FullFrameBuf, look_correction: f32, pupil_c
     // draw_asymmetric_inner_eye(&mut raw_fb, is_left , &pupil_ctr, pupil_diam, highlight_diam);
 }
 
-// // Flip a buffer representing an Rgb565 image horizontally (about Y axis)
-// fn fliph_rgb565_inplace(buffer: &mut [u8], width: usize, height: usize) {
-//     crate::assert_eq!(buffer.len(), width * height * 2);
-    
-//     // Reinterpret buffer as 16-bit pixels
-//     let pixels = unsafe {
-//         core::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut u16, buffer.len() / 2)
-//     };
-
-//     for row in pixels.chunks_exact_mut(width) {
-//         let mut left = 0;
-//         let mut right = width - 1;
-//         while left < right {
-//             row.swap(left, right);
-//             left += 1;
-//             right -= 1;
-//         }
-//     }
-// }
 
 
 // ---- TASKS defined below ---
@@ -355,6 +339,9 @@ async fn gpio_task(mut pin: Input<'static>) {
     }
 }
 
+
+
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // let mut pac = rp235x_pac::Peripherals::take().unwrap();
@@ -362,12 +349,16 @@ async fn main(spawner: Spawner) {
     let total_fbuf_size = 2*FRAME_SIZE_BYTES ; //+ INNER_EYE_FBUF_SIZE_BYTES;
     info!("Start Config total_fbuf_size = {}",total_fbuf_size);
 
-    MODE_SETTING.store(0, Ordering::Relaxed);
+    MODE_SETTING.store(3, Ordering::Relaxed);
 
     let pin = Input::new(p.PIN_22, Pull::Up);
     unwrap!(spawner.spawn(gpio_task(pin)));
     
     let mut led = Output::new(p.PIN_25, Level::High);
+
+    // Initialize frame buffers
+    let disp0_frame_buf: &'static mut [u8; FRAME_SIZE_BYTES] = DISPLAY0_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES]);
+    let disp1_frame_buf: &'static mut [u8; FRAME_SIZE_BYTES] = DISPLAY1_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES]);
 
     // LCD display 0: ST7789V pins
     let bl0 = p.PIN_7; // --> BL
@@ -376,7 +367,6 @@ async fn main(spawner: Spawner) {
     let cs0 = p.PIN_4; // SPI0 CSN --> CS
     let mosi0 = p.PIN_3; // SPI0 MosiPin --> DIN 
     let sck0 = p.PIN_2; // SPI0 SCK -->  CLK
-    let miso0 = p.PIN_20;// SPI0 MisoPin -- unused
 
     // LCD display 1: ST7789V pins
     let bl1 = p.PIN_14;// --> BL
@@ -385,7 +375,6 @@ async fn main(spawner: Spawner) {
     let mosi1 = p.PIN_11; // SPI1 MosiPin --> DIN
     let sck1 = p.PIN_10; // SPI1 SCK --> CLK
     let cs1 = p.PIN_9; // SPI1 CSN --> CS
-    let miso1 =  p.PIN_28; // SPI1 MisoPin -- unused
 
     let mut display_config = spi::Config::default();
     display_config.frequency = DISPLAY_FREQ;
@@ -395,7 +384,7 @@ async fn main(spawner: Spawner) {
 
     // create SPI0
     let spi0: Spi<'_, embassy_rp::peripherals::SPI0, Async> = 
-        Spi::new(p.SPI0, sck0, mosi0, miso0, p.DMA_CH0, p.DMA_CH1, display_config.clone());
+        Spi::new_txonly(p.SPI0, sck0, mosi0, p.DMA_CH0, display_config.clone());
     static SPI0_BUS: StaticCell<Mutex<NoopRawMutex, Spi<'static, embassy_rp::peripherals::SPI0, Async>>> = StaticCell::new();
     let spi0_bus = SPI0_BUS.init(Mutex::new(spi0));
     let spi0_device = SpiDevice::new(spi0_bus, Output::new(cs0, Level::High));
@@ -422,7 +411,7 @@ async fn main(spawner: Spawner) {
 
     // create SPI1
     let spi1: Spi<'_, embassy_rp::peripherals::SPI1, Async> = 
-        Spi::new(p.SPI1, sck1, mosi1, miso1, p.DMA_CH2, p.DMA_CH3, display_config.clone());
+        Spi::new_txonly(p.SPI1, sck1, mosi1, p.DMA_CH1, display_config.clone());
 
     // Create shared SPI1 bus
     static SPI1_BUS: StaticCell<Mutex<NoopRawMutex, Spi<'static, embassy_rp::peripherals::SPI1, Async>>> = StaticCell::new();
@@ -448,16 +437,16 @@ async fn main(spawner: Spawner) {
         .init(&mut Delay)
         .await
         .unwrap();
-    
-    // Initialize frame buffers
-    let disp0_frame_buf: &'static mut [u8; FRAME_SIZE_BYTES]  = DISPLAY0_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES]);
-    let disp1_frame_buf: &'static mut [u8; FRAME_SIZE_BYTES]  = DISPLAY1_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES]);
 
     let eyeframe_left_qoi = Qoi::new(include_bytes!("../img/eye-frame-left-olive.qoi")).unwrap();
     let eyeframe_left_img: Image<'_, Qoi<'_>> = Image::new(&eyeframe_left_qoi, Point::new(0,0));
-    
+    // let eyeframe_left_alt_qoi = Qoi::new(include_bytes!("../img/eye-frame-left.qoi")).unwrap();
+    // let _eyeframe_left_alt_img: Image<'_, Qoi<'_>> = Image::new(&eyeframe_left_alt_qoi, Point::new(0,0));
+
     let eyeframe_right_qoi = Qoi::new(include_bytes!("../img/eye-frame-right-olive.qoi")).unwrap();
     let eyeframe_right_img: Image<'_, Qoi<'_>> = Image::new(&eyeframe_right_qoi, Point::new(0,0));
+    // let eyeframe_right_alt_qoi = Qoi::new(include_bytes!("../img/eye-frame-right.qoi")).unwrap();
+    // let _eyeframe_right_alt_img: Image<'_, Qoi<'_>> = Image::new(&eyeframe_right_alt_qoi, Point::new(0,0));
 
     let left_pupil_ctr: Point = Point::new((DISPLAY_WIDTH-148) as i32,159) ; //- Size::new(0, DISPLAY_HEIGHT as u32 / 2);
     let right_pupil_ctr: Point = Point::new(148,159); //  - Size::new(0, DISPLAY_HEIGHT as u32 / 2);
@@ -467,14 +456,20 @@ async fn main(spawner: Spawner) {
 
     let mut iris_dirty = true ;
     let mut bg_dirty = true;
+    let mut display_dirty = true;
 
     // Enable LCD backlight
     bl0_pwm_out.set_duty_cycle_percent(25).unwrap();
     bl1_pwm_out.set_duty_cycle_percent(25).unwrap();
 
     let mut loop_count: usize = 0;
-    
+    let mut loop_elapsed_total: u64 = 0;
+    let mut push_elapsed_total: u64 = 0;
+
     let mut rnd_src = embassy_rp::clocks::RoscRng;
+
+
+    // unwrap!(spawner.spawn(consumer()));
 
     info!("Config done");
 
@@ -487,11 +482,11 @@ async fn main(spawner: Spawner) {
         led.set_low();
         let mode_val = MODE_SETTING.load(Ordering::Relaxed);
 
+        let loop_start_micros = Instant::now().as_micros();
         let mut rng_bytes:[u8;4] = [0; 4];
         rnd_src.fill_bytes(&mut rng_bytes);
 
         let mut look_step = rng_bytes[3] % 3;
-
 
          let iris_color =
             if mode_val == 0 { 
@@ -519,6 +514,9 @@ async fn main(spawner: Spawner) {
              };
 
         if old_mode_val != mode_val {
+            loop_count = 0;
+            loop_elapsed_total = 0;
+            push_elapsed_total = 0;
             old_mode_val = mode_val;
             iris_dirty = true;
             bg_dirty = true;
@@ -547,8 +545,7 @@ async fn main(spawner: Spawner) {
             // re-render the eye background images
             render_one_bg_image(disp0_frame_buf, &eyeframe_left_img);
             render_one_bg_image(disp1_frame_buf, &eyeframe_right_img);
-                // eyelash inner (liner)
-
+            display_dirty = true;
         }
 
         let look_correction = match look_step {
@@ -561,32 +558,48 @@ async fn main(spawner: Spawner) {
             // Draw both eyes
             draw_one_full_eye(disp0_frame_buf, look_correction, &left_pupil_ctr, pupil_diam, iris_diam, iris_color, highlight_diam);
             draw_one_full_eye(disp1_frame_buf, look_correction, &right_pupil_ctr, pupil_diam, iris_diam, iris_color, highlight_diam);
+            display_dirty = true;
+        }
 
-            // push both framebuffers to their respective displays
-            left_display
-                .show_raw_data(0, 0, 
-                    DISPLAY_WIDTH, DISPLAY_HEIGHT, 
-                    disp0_frame_buf)
-                .await
-                .unwrap();
-            right_display
-                .show_raw_data(0, 0, 
-                    DISPLAY_WIDTH, DISPLAY_HEIGHT, 
-                    disp1_frame_buf)
-                .await
-                .unwrap();
+        let push_start_micros = Instant::now().as_micros();
+
+        if display_dirty {
+        // push both framebuffers to their respective displays
+        left_display
+            .show_raw_data(0, 0, 
+                DISPLAY_WIDTH, DISPLAY_HEIGHT, 
+                disp0_frame_buf)
+            .await
+            .unwrap();
+        right_display
+            .show_raw_data(0, 0, 
+                DISPLAY_WIDTH, DISPLAY_HEIGHT, 
+                disp1_frame_buf)
+            .await
+            .unwrap();
         }
 
         led.set_high();
 
-        if iris_dirty {
-            iris_dirty = false;
-            // Timer::after_millis(5).await;
-        }
-        else {
-            Timer::after_millis(17).await;
-        }
+        iris_dirty = false;
         bg_dirty = false;
+        if !display_dirty {
+            Timer::after_millis(5).await;
+        }
+        display_dirty = false;
+
         loop_count += 1;
+        let loop_finished_micros = Instant::now().as_micros();
+        let loop_elapsed_micros = loop_finished_micros - loop_start_micros;
+        let push_elapsed_micros = loop_finished_micros - push_start_micros;
+        push_elapsed_total += push_elapsed_micros;
+        loop_elapsed_total += loop_elapsed_micros;
+        if loop_count % 100 == 0 {
+            let avg_loop_elapsed = loop_elapsed_total / loop_count as u64;
+            let avg_push_elapsed = push_elapsed_total / loop_count as u64;
+            info!("avg_elapsed micros: {} {}", avg_push_elapsed, avg_loop_elapsed);
+        }
     }
 }
+
+
