@@ -78,6 +78,10 @@ SECTIONS
   /* Other sections... */
 
   /* Define a section for your custom stack, linked to the defined memory region */
+  .core0_stack :
+  {
+    *(.core0_stack);
+  } > SRAM8
   .core1_stack :
   {
     *(.core1_stack);
