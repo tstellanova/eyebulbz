@@ -516,7 +516,6 @@ async fn main(spawner: Spawner) {
                 Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2])
              };
         
-        CUR_IRIS_DIRTY.store(iris_dirty, Ordering::Relaxed);
         CUR_IRIS_COLOR.store(iris_color.into_storage(), Ordering::Relaxed);
 
         if old_mode_val != mode_val {
@@ -527,6 +526,8 @@ async fn main(spawner: Spawner) {
             iris_dirty = true;
             bg_dirty = true;
         }
+        CUR_IRIS_DIRTY.store(iris_dirty, Ordering::Relaxed);
+        CUR_BG_DIRTY.store(bg_dirty, Ordering::Relaxed);
 
         // TODO brightness cycling based on mode?
         if brightness_ascending {
@@ -545,15 +546,11 @@ async fn main(spawner: Spawner) {
         }
         CUR_BRIGHTNESS.store(brightness_percent, Ordering::Relaxed);
 
-        CUR_BG_DIRTY.store(bg_dirty, Ordering::Relaxed);
-
         bl0_pwm_out.set_duty_cycle_percent(brightness_percent.try_into().unwrap()).unwrap();
-        // bl1_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
 
         if bg_dirty {
-            // re-render the eye background images
+            // re-render the eye background image
             render_one_bg_image(disp0_frame_buf, &eyeframe_left_img);
-            // render_one_bg_image(disp1_frame_buf, &eyeframe_right_img);
             display_dirty = true;
         }
 
@@ -564,7 +561,6 @@ async fn main(spawner: Spawner) {
         };
 
         if iris_dirty {
-            // Draw both eyes
             draw_one_full_eye(disp0_frame_buf, look_correction, &LEFT_PUPIL_CTR, pupil_diam, iris_diam, iris_color, HIGHLIGHT_DIAM);
             display_dirty = true;
         }
@@ -580,18 +576,16 @@ async fn main(spawner: Spawner) {
                 .await
                 .unwrap();
         }
-
+        let loop_finished_micros: u64 = Instant::now().as_micros();
         led.set_high();
 
         iris_dirty = false;
         bg_dirty = false;
-        if !display_dirty {
-            Timer::after_millis(5).await;
-        }
         display_dirty = false;
+        // give some time to inter-task stuff
+        Timer::after_millis(5).await;
 
         loop_count += 1;
-        let loop_finished_micros = Instant::now().as_micros();
         let loop_elapsed_micros = loop_finished_micros - loop_start_micros;
         let push_elapsed_micros = loop_finished_micros - push_start_micros;
         push_elapsed_total += push_elapsed_micros;
@@ -675,5 +669,6 @@ async fn core1_task(
                 .unwrap();
             display_dirty = false;
         }
+        Timer::after_millis(5).await;
     }
 }
