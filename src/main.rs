@@ -4,26 +4,24 @@
 use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
-use embedded_hal::spi::SpiBus;
 // use rp235x_hal::rosc::RingOscillator;
-use core::{default::Default, sync::atomic::{AtomicBool, AtomicU32}};
-use portable_atomic::{AtomicU16, AtomicU8, AtomicUsize, Ordering};
+use core::{default::Default};//sync::atomic::{AtomicBool}
+use portable_atomic::{AtomicBool, AtomicU16, AtomicU8, AtomicUsize, Ordering};
 
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_executor::{Spawner, Executor};
 use embassy_rp:: {
-    self as hal, block::ImageDef, gpio::{Input, Level, Output, Pull}, peripherals::{self, SPI1}, pwm::{self, Pwm, SetDutyCycle}, spi::{self, Async, Spi}
+    self as hal, block::ImageDef, gpio::{Input, Level, Output, Pull}, peripherals::{self, SPI0, SPI1}, pwm::{self, Pwm, SetDutyCycle}, spi::{self, Async, Spi},
 };
 
-use embassy_sync::{blocking_mutex::raw::{self, NoopRawMutex}, mutex::Mutex};
+use embassy_sync::{blocking_mutex::{raw::{CriticalSectionRawMutex, NoopRawMutex}, CriticalSectionMutex, NoopMutex}, mutex::Mutex, signal::Signal};
 use embassy_time::{Delay, Instant, Timer};
 
 use embedded_graphics::{
     image::Image, pixelcolor::{raw::RawU16, Rgb565}, prelude::{DrawTargetExt, *}, primitives::{Arc, Circle, Ellipse, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, Styled}
 };
 
-
-use embassy_rp::multicore::Stack;
+use embassy_rp::multicore::{Stack};
 
 use static_cell::StaticCell;
 
@@ -97,7 +95,7 @@ const IRIS_PALETTE_SPECTRUM: [Rgb565; 6] = [ Rgb565::CSS_BLUE_VIOLET, Rgb565::CS
 
 #[link_section = ".core1_stack"]
 static mut CORE1_STACK: Stack<4096> = Stack::new();
-// static mut CORE1_STACK: [u8; 4096] = [0; 4096]; // Example: 4KB stack
+
 
 // static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
@@ -112,6 +110,11 @@ static CUR_IRIS_COLOR: AtomicU16 = AtomicU16::new(0);
 static CUR_LOOK_STEP: AtomicU8 = AtomicU8::new(0);
 static CUR_BG_DIRTY: AtomicBool = AtomicBool::new(true);
 static CUR_IRIS_DIRTY: AtomicBool = AtomicBool::new(true);
+
+
+
+static EYE_START_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+// static EYE_END_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
 
@@ -362,7 +365,7 @@ async fn gpio_task(mut pin: Input<'static>) {
 
 
 
-type Spi1DeviceType = SpiDevice<'static, NoopRawMutex, Spi<'static, SPI1, Async>, Output<'static>>;
+// type Spi1DeviceType = SpiDevice<'static, NoopRawMutex, Spi<'static, SPI1, Async>, Output<'static>>;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -371,18 +374,15 @@ async fn main(spawner: Spawner) {
     let total_fbuf_size = 2*FRAME_SIZE_BYTES ; //+ INNER_EYE_FBUF_SIZE_BYTES;
     info!("Start Config total_fbuf_size = {}",total_fbuf_size);
 
+    // Read MSP at runtime
+    let sp: u32 = cortex_m::register::msp::read();
+    info!("Main MSP (Core0) = {:#010X}", sp);
+
+    // prep for reading mode change events
     MODE_SETTING.store(3, Ordering::Relaxed);
 
-    let pin = Input::new(p.PIN_22, Pull::Up);
-    unwrap!(spawner.spawn(gpio_task(pin)));
 
-
-    
     let mut led = Output::new(p.PIN_25, Level::High);
-
-    // Initialize frame buffers
-    let disp0_frame_buf: &'static mut [u8; FRAME_SIZE_BYTES] = DISPLAY0_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES]);
-    // let disp1_frame_buf: &'static mut [u8; FRAME_SIZE_BYTES] = DISPLAY1_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES]);
 
     // LCD display 0: ST7789V pins
     let bl0 = p.PIN_7; // --> BL
@@ -406,39 +406,14 @@ async fn main(spawner: Spawner) {
     display_config.polarity = spi::Polarity::IdleHigh;
 
 
-    // create SPI0
     let spi0: Spi<'_, embassy_rp::peripherals::SPI0, Async> = 
         Spi::new_txonly(p.SPI0, sck0, mosi0, p.DMA_CH0, display_config.clone());
-    static SPI0_BUS: StaticCell<Mutex<NoopRawMutex, Spi<'static, embassy_rp::peripherals::SPI0, Async>>> = StaticCell::new();
-    let spi0_bus = SPI0_BUS.init(Mutex::new(spi0));
-    let spi0_device = SpiDevice::new(spi0_bus, Output::new(cs0, Level::High));
-
-    // dcx: 0 = command, 1 = data
     let dcx0_out = Output::new(dcx0, Level::Low);
     let rst0_out = Output::new(rst0, Level::Low);
+    let bl0_pwm_out: Pwm<'_> = Pwm::new_output_b(p.PWM_SLICE3, bl0, pwm::Config::default());//TODO doesn't work?
 
-    // LCD backlight -- initially off
-    let mut bl0_pwm_out: Pwm<'_> = Pwm::new_output_b(p.PWM_SLICE3, bl0, pwm::Config::default());
-
-    // display interface abstraction from SPI and DC
-    let spi_int0 = SpiInterface::new(spi0_device, dcx0_out);
-
-    // Define the display from the display interface and initialize it
-    let mut left_display = Builder::new(ST7789, spi_int0)
-        .reset_pin(rst0_out)
-        .display_size(DISPLAY_HEIGHT, DISPLAY_WIDTH)
-        .orientation(Orientation::new().rotate(Rotation::Deg270))
-        .invert_colors(ColorInversion::Inverted)
-        .init(&mut Delay)
-        .await
-        .unwrap();
-
-
-    // create SPI1
     let spi1: Spi<'_, embassy_rp::peripherals::SPI1, Async> = 
         Spi::new_txonly(p.SPI1, sck1, mosi1, p.DMA_CH1, display_config.clone());
-
-    // dcx: 0 = command, 1 = data
     let dcx1_out = Output::new(dcx1, Level::Low);
     let rst1_out = Output::new(rst1, Level::Low);
 
@@ -446,25 +421,19 @@ async fn main(spawner: Spawner) {
         move || {
             let executor1 = EXECUTOR1.init(Executor::new());
             let bl1_pwm_out: Pwm<'static> = Pwm::new_output_a(p.PWM_SLICE7, bl1, pwm::Config::default());
-            executor1.run(|spawner| spawner.spawn(core1_task( spi1, cs1, rst1_out, dcx1_out,  bl1_pwm_out)).unwrap());
+            executor1.run(|spawner| spawner.spawn(core1_drawing_task( spi1, cs1, rst1_out, dcx1_out,  bl1_pwm_out)).unwrap());
         }
     );
 
-    let eyeframe_left_qoi = Qoi::new(include_bytes!("../img/eye-frame-left-olive.qoi")).unwrap();
-    let eyeframe_left_img: Image<'_, Qoi<'_>> = Image::new(&eyeframe_left_qoi, Point::new(0,0));
-    // let eyeframe_left_alt_qoi = Qoi::new(include_bytes!("../img/eye-frame-left.qoi")).unwrap();
-    // let _eyeframe_left_alt_img: Image<'_, Qoi<'_>> = Image::new(&eyeframe_left_alt_qoi, Point::new(0,0));
+    // spawn the core0 drawing task
+    unwrap!(spawner.spawn(core0_drawing_task(spi0,cs0,rst0_out,dcx0_out,bl0_pwm_out)));
 
-    let iris_diam = IRIS_DIAM.into();
-    let pupil_diam = PUPIL_DIAM.into();
+    // read Mode0 button events
+    let mode0_button_pin = Input::new(p.PIN_22, Pull::Up);
+    unwrap!(spawner.spawn(gpio_task(mode0_button_pin)));
 
     let mut iris_dirty = true ;
     let mut bg_dirty = true;
-    let mut display_dirty = true;
-
-    // Enable LCD backlight
-    bl0_pwm_out.set_duty_cycle_percent(25).unwrap();
-    // bl1_pwm_out.set_duty_cycle_percent(25).unwrap();
 
     let mut loop_count: usize = 0;
     let mut loop_elapsed_total: u64 = 0;
@@ -484,11 +453,8 @@ async fn main(spawner: Spawner) {
         let mut brightness_percent = CUR_BRIGHTNESS.load(Ordering::Relaxed);
 
         let loop_start_micros = Instant::now().as_micros();
-        let mut rng_bytes:[u8;4] = [0; 4];
-        rnd_src.fill_bytes(&mut rng_bytes);
 
-        let mut look_step = rng_bytes[3] % 3;
-        CUR_LOOK_STEP.store(look_step, Ordering::Relaxed);
+        let mut look_step = (loop_count % 3).try_into().unwrap();
 
          let iris_color: Rgb565 =
             if mode_val == 0 { 
@@ -496,27 +462,27 @@ async fn main(spawner: Spawner) {
             }
             else if mode_val == 1 { 
                 iris_dirty = true;
+                look_step = (loop_count % 3).try_into().unwrap();
                 Rgb565::CSS_RED 
             }
             else if mode_val == 2 {
                 iris_dirty = true;
                 let color_idx = loop_count % IRIS_PALETTE_SPECTRUM.len();
-                Timer::after_millis(100).await;
                 IRIS_PALETTE_SPECTRUM[color_idx]
             }
             else if mode_val == 3 {
                 iris_dirty = true;
-                // look_step = (loop_count % 3).try_into().unwrap();
                 let color_idx = loop_count % IRIS_PALETTE_PURPLE.len();
-                look_step = (color_idx % 3).try_into().unwrap();
                 IRIS_PALETTE_PURPLE[color_idx]  
             }
             else {
+                let mut rng_bytes:[u8;4] = [0; 4];
+                rnd_src.fill_bytes(&mut rng_bytes);
+                look_step = ( rng_bytes[3] % 3).try_into().unwrap();
                 iris_dirty = true;
                 Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2])
              };
         
-        CUR_IRIS_COLOR.store(iris_color.into_storage(), Ordering::Relaxed);
 
         if old_mode_val != mode_val {
             loop_count = 0;
@@ -526,8 +492,6 @@ async fn main(spawner: Spawner) {
             iris_dirty = true;
             bg_dirty = true;
         }
-        CUR_IRIS_DIRTY.store(iris_dirty, Ordering::Relaxed);
-        CUR_BG_DIRTY.store(bg_dirty, Ordering::Relaxed);
 
         // TODO brightness cycling based on mode?
         if brightness_ascending {
@@ -544,46 +508,26 @@ async fn main(spawner: Spawner) {
                 brightness_ascending = true; 
             }
         }
+
+        // ship all the redraw config values
+        CUR_LOOK_STEP.store(look_step, Ordering::Relaxed);
+        CUR_IRIS_COLOR.store(iris_color.into_storage(), Ordering::Relaxed);
+        CUR_IRIS_DIRTY.store(iris_dirty, Ordering::Relaxed);
+        CUR_BG_DIRTY.store(bg_dirty, Ordering::Relaxed);
         CUR_BRIGHTNESS.store(brightness_percent, Ordering::Relaxed);
 
-        bl0_pwm_out.set_duty_cycle_percent(brightness_percent.try_into().unwrap()).unwrap();
-
-        if bg_dirty {
-            // re-render the eye background image
-            render_one_bg_image(disp0_frame_buf, &eyeframe_left_img);
-            display_dirty = true;
-        }
-
-        let look_correction = match look_step {
-            1 => 0.95,
-            2 => -0.95,
-            _ => 1.0,
-        };
-
-        if iris_dirty {
-            draw_one_full_eye(disp0_frame_buf, look_correction, &LEFT_PUPIL_CTR, pupil_diam, iris_diam, iris_color, HIGHLIGHT_DIAM);
-            display_dirty = true;
-        }
+        // At this point, all of the config data points required to re-render the frame have been calculated
+        // and passed as atomics. Push a Signal to sync with the other eye.
+        EYE_START_SIGNAL.signal(());
+        // give some time to inter-task stuff
+        Timer::after_millis(30).await;
 
         let push_start_micros = Instant::now().as_micros();
-
-        if display_dirty {
-            // push framebuffer to display respective displays
-            left_display
-                .show_raw_data(0, 0, 
-                    DISPLAY_WIDTH, DISPLAY_HEIGHT, 
-                    disp0_frame_buf)
-                .await
-                .unwrap();
-        }
         let loop_finished_micros: u64 = Instant::now().as_micros();
         led.set_high();
 
         iris_dirty = false;
         bg_dirty = false;
-        display_dirty = false;
-        // give some time to inter-task stuff
-        Timer::after_millis(5).await;
 
         loop_count += 1;
         let loop_elapsed_micros = loop_finished_micros - loop_start_micros;
@@ -599,43 +543,46 @@ async fn main(spawner: Spawner) {
 }
 
 
-#[embassy_executor::task]
-async fn core1_task(
-    spi1: Spi<'static, SPI1, embassy_rp::spi::Async>,
-    cs1: embassy_rp::Peri<'static,peripherals::PIN_9> , 
-    rst1_out: Output<'static>,
-    dcx1_out: Output<'static>,
-    mut bl1_pwm_out:   Pwm<'static> ) {
+/**
+ * Performs the main redrawing for each eye
+ */
+async fn redraw_loop<T>(is_left: bool, mut backlight_pwm_out:   Pwm<'static>, mut display: RealDisplayType<T>) 
+where T: embassy_rp::spi::Instance
 
-    // Create shared SPI1 bus from raw Spi
-    static SPI1_BUS: StaticCell<Mutex<NoopRawMutex, Spi<'static, embassy_rp::peripherals::SPI1, Async>>> = StaticCell::new();
-    let spi1_bus = SPI1_BUS.init(Mutex::new(spi1));
-    let spi1_device = SpiDevice::new(spi1_bus, Output::new(cs1, Level::High));
-    // display interface abstraction from SPI and DC
-    let spi_int1 = SpiInterface::new(spi1_device, dcx1_out);
+{
+    backlight_pwm_out.set_duty_cycle_percent(25).unwrap();
 
-    // Define the display from the display interface and initialize it
-    let mut right_display = Builder::new(ST7789, spi_int1)
-        .reset_pin(rst1_out)
-        .display_size(DISPLAY_HEIGHT, DISPLAY_WIDTH)
-        .orientation(Orientation::new().rotate(Rotation::Deg90))
-        .invert_colors(ColorInversion::Inverted)
-        .init(&mut Delay)
-        .await
-        .unwrap();
+    let disp_frame_buf: &'static mut [u8; FRAME_SIZE_BYTES] = 
+        if is_left {
+            DISPLAY0_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES])
+        }
+        else {
+            DISPLAY1_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES])
+        };
 
-    bl1_pwm_out.set_duty_cycle_percent(25).unwrap();
+    // someday this may change periodically as emotions change
+    let eyeframe_bg_qoi = {
+        if is_left {
+             Qoi::new(include_bytes!("../img/eye-frame-left-olive.qoi")).unwrap()
+        }
+        else {
+            Qoi::new(include_bytes!("../img/eye-frame-right-olive.qoi")).unwrap()
+        }
+    };
 
-    let disp1_frame_buf: &'static mut [u8; FRAME_SIZE_BYTES] = DISPLAY1_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES]);
-
-    let eyeframe_right_qoi = Qoi::new(include_bytes!("../img/eye-frame-right-olive.qoi")).unwrap();
-    let eyeframe_right_img: Image<'_, Qoi<'_>> = Image::new(&eyeframe_right_qoi, Point::new(0,0));
-    
+    let eyeframe_bg_img =  Image::new(&eyeframe_bg_qoi, Point::new(0,0));
     let mut display_dirty = true;
+    let pupil_ctr_val = {
+        if is_left { LEFT_PUPIL_CTR }
+        else { RIGHT_PUPIL_CTR}
+    };
 
     loop {
+        EYE_START_SIGNAL.wait().await;
+        let bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
+        let iris_dirty = CUR_IRIS_DIRTY.load(Ordering::Relaxed);
         let brightness_percent: u8 = CUR_BRIGHTNESS.load(Ordering::Relaxed).try_into().unwrap();
-        bl1_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
+        backlight_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
 
         let look_step = CUR_LOOK_STEP.load(Ordering::Relaxed);
         let look_correction = match look_step {
@@ -644,31 +591,98 @@ async fn core1_task(
             _ => 1.0,
         };
 
-        let bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
-        let iris_dirty = CUR_IRIS_DIRTY.load(Ordering::Relaxed);
         let iris_color: Rgb565 = Rgb565::from(RawU16::new(CUR_IRIS_COLOR.load(Ordering::Relaxed)));
 
-        if bg_dirty {
-            render_one_bg_image(disp1_frame_buf, &eyeframe_right_img);
+        if bg_dirty || display_dirty {
+            render_one_bg_image(disp_frame_buf, &eyeframe_bg_img);
             display_dirty = true;
         }
 
-        if iris_dirty {
-            draw_one_full_eye(disp1_frame_buf, look_correction, &RIGHT_PUPIL_CTR, PUPIL_DIAM.try_into().unwrap()
+        if iris_dirty || display_dirty {
+            draw_one_full_eye(disp_frame_buf, look_correction, &pupil_ctr_val, PUPIL_DIAM.try_into().unwrap()
             , IRIS_DIAM.try_into().unwrap(), iris_color, HIGHLIGHT_DIAM);
             display_dirty = true;
         }
 
         if display_dirty {
             // Process data from SPI1
-            right_display
+            display
                 .show_raw_data(0, 0, 
                     DISPLAY_WIDTH, DISPLAY_HEIGHT, 
-                    disp1_frame_buf)
+                    disp_frame_buf)
                 .await
                 .unwrap();
             display_dirty = false;
         }
+        // EYE_END_SIGNAL.signal(());
+        // give some time to inter-task stuff
         Timer::after_millis(5).await;
     }
+}
+
+
+#[embassy_executor::task]
+async fn core0_drawing_task(
+    spi_raw: Spi<'static, SPI0, embassy_rp::spi::Async>,
+    cs_peri: embassy_rp::Peri<'static,peripherals::PIN_4> , 
+    rst_out: Output<'static>,
+    dcx_out: Output<'static>,
+    backlight_pwm_out: Pwm<'static> ) {
+
+    // Read MSP at runtime
+    let sp: u32 = cortex_m::register::msp::read();
+    info!("Core0 MSP = {:#010X}", sp);
+
+    // Create shared SPI1 bus from raw Spi
+    static SPI_BUS: StaticCell<Mutex<NoopRawMutex, Spi<'static, SPI0, Async>>> = StaticCell::new();
+    let spi_bus = SPI_BUS.init(Mutex::new(spi_raw));
+    let spi_device = SpiDevice::new(spi_bus, Output::new(cs_peri, Level::High));
+    // display interface abstraction from SPI and DC
+    let spi_int = SpiInterface::new(spi_device, dcx_out);
+
+    // Define the display from the display interface and initialize it
+    let display = Builder::new(ST7789, spi_int)
+        .reset_pin(rst_out)
+        .display_size(DISPLAY_HEIGHT, DISPLAY_WIDTH)
+        .orientation(Orientation::new().rotate(Rotation::Deg270))
+        .invert_colors(ColorInversion::Inverted)
+        .init(&mut Delay)
+        .await
+        .unwrap();
+
+    redraw_loop(true, backlight_pwm_out, display).await;
+
+}
+
+#[embassy_executor::task]
+async fn core1_drawing_task(
+    spi_raw: Spi<'static, SPI1, embassy_rp::spi::Async>,
+    cs_peri: embassy_rp::Peri<'static,peripherals::PIN_9> , 
+    rst_out: Output<'static>,
+    dcx_out: Output<'static>,
+    backlight_pwm_out: Pwm<'static> ) {
+
+    // Read MSP at runtime
+    let sp: u32 = cortex_m::register::msp::read();
+    info!("Core1 MSP = {:#010X}", sp);
+
+    // Create shared SPI1 bus from raw Spi
+    static SPI_BUS: StaticCell<Mutex<NoopRawMutex, Spi<'static, SPI1, Async>>> = StaticCell::new();
+    let spi_bus = SPI_BUS.init(Mutex::new(spi_raw));
+    let spi_device = SpiDevice::new(spi_bus, Output::new(cs_peri, Level::High));
+    // display interface abstraction from SPI and DC
+    let spi_int = SpiInterface::new(spi_device, dcx_out);
+
+    // Define the display from the display interface and initialize it
+    let  display = Builder::new(ST7789, spi_int)
+        .reset_pin(rst_out)
+        .display_size(DISPLAY_HEIGHT, DISPLAY_WIDTH)
+        .orientation(Orientation::new().rotate(Rotation::Deg90))
+        .invert_colors(ColorInversion::Inverted)
+        .init(&mut Delay)
+        .await
+        .unwrap();
+
+    redraw_loop(false, backlight_pwm_out, display).await;
+
 }

@@ -13,13 +13,13 @@ defmt = "1"
 defmt-rtt = "1"
 panic-probe = { version = "1", features = ["print-defmt"] }
 
-embassy-embedded-hal = { version = "0.3.1",  features = ["defmt"] }
-embassy-sync = { version = "0.7.0",  features = ["defmt"] }
+embassy-embedded-hal = { version = "0.4.0",  features = ["defmt"] }
+embassy-sync = { version = "0.7.1",  features = ["defmt"] }
 
 
-embassy-executor = { version = "0.7.0", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+embassy-executor = { version = "0.8.0", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 embassy-time = { version = "0.4.0",  features = ["defmt", "defmt-timestamp-uptime"] }
-embassy-rp = { version = "0.6.0",  features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp235xa","binary-info"] }
+embassy-rp = { version = "0.7.0",  features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp235xa","binary-info"] }
 
 embedded-graphics = "0.8.1"
 lcd-async = "0.1.1"

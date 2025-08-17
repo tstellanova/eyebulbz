@@ -78,15 +78,19 @@ SECTIONS
   /* Other sections... */
 
   /* Define a section for your custom stack, linked to the defined memory region */
-  .core0_stack :
-  {
-    *(.core0_stack);
-  } > SRAM8
   .core1_stack :
   {
     *(.core1_stack);
   } > SRAM9
 }
 
+/*
+_stack_start = ORIGIN(SRAM8) + LENGTH(SRAM8);
+_stack_end   = ORIGIN(SRAM8);
+*/
+
 PROVIDE(start_to_end = __end_block_addr - __start_block_addr);
 PROVIDE(end_to_start = __start_block_addr - __end_block_addr);
+
+
+
