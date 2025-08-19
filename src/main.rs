@@ -481,24 +481,23 @@ async fn main(spawner: Spawner) {
                 Rgb565::CSS_MAGENTA 
             }
             else if mode_val == 1 { 
-                frame_render_gap_usec = 200;
+                frame_render_gap_usec = 100;
                 iris_dirty = true;
                 Rgb565::CSS_RED 
             }
             else if mode_val == 2 {
-
                 iris_dirty = true;
                 let color_idx = loop_count % IRIS_PALETTE_SPECTRUM.len();
                 IRIS_PALETTE_SPECTRUM[color_idx]
             }
             else if mode_val == 3 {
-                frame_render_gap_usec = 5000;
+                frame_render_gap_usec = 200;
                 iris_dirty = true;
                 let color_idx = loop_count % IRIS_PALETTE_PURPLE.len();
                 IRIS_PALETTE_PURPLE[color_idx]  
             }
             else {
-                frame_render_gap_usec = 1000;
+                frame_render_gap_usec = 250;
                 let mut rng_bytes:[u8;4] = [0; 4];
                 rnd_src.fill_bytes(&mut rng_bytes);
                 look_step = ( rng_bytes[3] % 3).try_into().unwrap();
