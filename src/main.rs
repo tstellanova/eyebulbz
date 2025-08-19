@@ -79,20 +79,22 @@ const EYELASH_DIAMETER: u32 = 310u32;
 const LEFT_PUPIL_CTR: Point = Point::new((DISPLAY_WIDTH-148) as i32,159) ; //- Size::new(0, DISPLAY_HEIGHT as u32 / 2);
 const RIGHT_PUPIL_CTR: Point = Point::new(148,159); //  - Size::new(0, DISPLAY_HEIGHT as u32 / 2);
 
-const MODE_A_COUNT: usize = 5;
+const MODE_A_COUNT: u8 = 5;
+const MODE_B_COUNT: u8 = 5;
 
 #[derive(Debug, Eq, PartialEq, TryFromPrimitive)]
 #[repr(u8)]
 enum EmotionExpression {
     Neutral = 0,
     Happy = 1,
-    Surprise = 2,
-    Thoughtful = 3,
-    Curious = 4,
-    Confused = 5,
-    Shy = 6,
-    Love = 7,
-    Trepidation = 8,
+    // Surprise = 2,
+    // Thoughtful = 3,
+    // Curious = 4,
+    // Confused = 5,
+    // Shy = 6,
+    // Love = 7,
+    // Trepidation = 8,
+    MaxCount
 }
 
 const IRIS_PALETTE_PURPLE: [Rgb565; 8] = [ 
@@ -117,7 +119,8 @@ static DISPLAY0_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 static DISPLAY1_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 
 // == Cross-core signaling stuff below
-static MODE_A_VALUE: AtomicUsize = AtomicUsize::new(0);
+static MODE_A_VALUE: AtomicU8 = AtomicU8::new(0);
+static MODE_B_VALUE: AtomicU8 = AtomicU8::new(0);
 static CUR_BRIGHTNESS: AtomicUsize = AtomicUsize::new(50);
 static CUR_IRIS_COLOR: AtomicU16 = AtomicU16::new(0);
 static CUR_LOOK_STEP: AtomicU8 = AtomicU8::new(0);
@@ -378,6 +381,23 @@ async fn mode_a_button_task(mut pin: Input<'static>) {
     }
 }
 
+// TODO make this a real interrupt handler rather than parking waiting on falling edge?
+#[embassy_executor::task]
+async fn mode_b_button_task(mut pin: Input<'static>) {
+    loop {
+        let mut mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
+        pin.wait_for_falling_edge().await;
+        
+        // Introduce a debounce delay
+        Timer::after_millis(10).await; 
+
+        if pin.is_low() {
+            mode_b_val = (mode_b_val + 1) % EmotionExpression::MaxCount as u8;
+            MODE_B_VALUE.store(mode_b_val, Ordering::Relaxed);
+        }
+    }
+}
+
 
 
 
@@ -394,6 +414,7 @@ async fn main(spawner: Spawner) {
 
     // prep for reading mode change events
     MODE_A_VALUE.store(1, Ordering::Relaxed);
+    MODE_B_VALUE.store(0, Ordering::Relaxed);
 
     let mut led = Output::new(p.PIN_25, Level::High);
 
@@ -460,7 +481,9 @@ async fn main(spawner: Spawner) {
     unwrap!(spawner.spawn(core0_drawing_task(spi0,cs0,rst0_out,dcx0_out,bl0_pwm_out)));
 
     // read Mode A button events
-    unwrap!(spawner.spawn(mode_a_button_task(Input::new(p.PIN_22, Pull::Up))));
+    // unwrap!(spawner.spawn(mode_a_button_task(Input::new(p.PIN_22, Pull::Up))));
+    unwrap!(spawner.spawn(mode_a_button_task(Input::new(p.PIN_4, Pull::Up))));
+    unwrap!(spawner.spawn(mode_b_button_task(Input::new(p.PIN_8, Pull::Up))));
 
     let mut iris_dirty = true ;
     let mut bg_dirty = true;
@@ -474,14 +497,17 @@ async fn main(spawner: Spawner) {
     info!("Config done");
 
     let mut brightness_ascending: bool = true;
-    let mut old_mode_val: usize = 555;
+    let mut old_mode_a_val  = 255;
+    let mut old_mode_b_val  = 255;
 
     let eye_ready_pub = EYE_READY_CHANNEL.publisher().unwrap();
 
     // Main drawing loop, runs forever
     loop {
         led.set_low();
-        let mode_val = MODE_A_VALUE.load(Ordering::Relaxed);
+        let mode_a_val = MODE_A_VALUE.load(Ordering::Relaxed);
+        let mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
+
         let mut brightness_percent = CUR_BRIGHTNESS.load(Ordering::Relaxed);
 
         let loop_start_micros = Instant::now().as_micros();
@@ -489,24 +515,36 @@ async fn main(spawner: Spawner) {
         let mut look_step = (loop_count % 3).try_into().unwrap();
         let mut frame_render_gap_usec = 100;
 
-         let iris_color: Rgb565 =
-            if mode_val == 0 { 
-                CUR_EMOTION.store(EmotionExpression::Neutral as u8, Ordering::Relaxed);
+
+        if old_mode_b_val != mode_b_val {
+            info!("old mode_b: {} new: {}", old_mode_b_val, mode_b_val);
+            loop_count = 0;
+            loop_elapsed_total = 0;
+            recalc_elapsed_total = 0;
+            iris_dirty = true;
+            bg_dirty = true;
+            old_mode_b_val = mode_b_val;
+            // TODO for development, emotion is locked to Mode B state
+            CUR_EMOTION.store(mode_b_val, Ordering::Relaxed);
+        }
+
+
+        let iris_color: Rgb565 =
+            if mode_a_val == 0 { 
                 frame_render_gap_usec = 500;
                 Rgb565::CSS_MAGENTA 
             }
-            else if mode_val == 1 { 
+            else if mode_a_val == 1 { 
                 frame_render_gap_usec = 100;
                 iris_dirty = true;
                 Rgb565::CSS_RED 
             }
-            else if mode_val == 2 {
-                CUR_EMOTION.store(EmotionExpression::Happy as u8, Ordering::Relaxed);
+            else if mode_a_val == 2 {
                 iris_dirty = true;
                 let color_idx = loop_count % IRIS_PALETTE_SPECTRUM.len();
                 IRIS_PALETTE_SPECTRUM[color_idx]
             }
-            else if mode_val == 3 {
+            else if mode_a_val == 3 {
                 frame_render_gap_usec = 200;
                 iris_dirty = true;
                 let color_idx = loop_count % IRIS_PALETTE_PURPLE.len();
@@ -519,16 +557,16 @@ async fn main(spawner: Spawner) {
                 look_step = ( rng_bytes[3] % 3).try_into().unwrap();
                 iris_dirty = true;
                 Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2])
-             };
-        
-
-        if old_mode_val != mode_val {
+            };
+    
+        // TODO we keep mode A and mode B separate for now-- eg Mode B might be inner-eye specific at some point
+        if old_mode_a_val != mode_a_val  {
             loop_count = 0;
             loop_elapsed_total = 0;
             recalc_elapsed_total = 0;
-            old_mode_val = mode_val;
             iris_dirty = true;
             bg_dirty = true;
+            old_mode_a_val = mode_a_val;
         }
 
         // TODO brightness cycling based on mode?
