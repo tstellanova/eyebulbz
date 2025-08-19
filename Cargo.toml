@@ -28,6 +28,7 @@ rand = {version="0.9",default-features = false }
 tinyqoi = "0.2.0"
 static_cell = { version = "2.1.1" }
 portable-atomic = { version = "1.11.1", features = ["critical-section"] }
+num_enum = {version="0.7.4",default-features = false}
 
 # If you're not going to use a Board Support Package you'll need these:
 rp235x-hal = { version = "0.3", features = [

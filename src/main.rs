@@ -34,6 +34,7 @@ use lcd_async::{
 };
 
 use tinyqoi::Qoi;
+use num_enum::TryFromPrimitive;
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -78,7 +79,21 @@ const EYELASH_DIAMETER: u32 = 310u32;
 const LEFT_PUPIL_CTR: Point = Point::new((DISPLAY_WIDTH-148) as i32,159) ; //- Size::new(0, DISPLAY_HEIGHT as u32 / 2);
 const RIGHT_PUPIL_CTR: Point = Point::new(148,159); //  - Size::new(0, DISPLAY_HEIGHT as u32 / 2);
 
-const NUM_A_MODES: usize = 5;
+const MODE_A_COUNT: usize = 5;
+
+#[derive(Debug, Eq, PartialEq, TryFromPrimitive)]
+#[repr(u8)]
+enum EmotionExpression {
+    Neutral = 0,
+    Happy = 1,
+    Surprise = 2,
+    Thoughtful = 3,
+    Curious = 4,
+    Confused = 5,
+    Shy = 6,
+    Love = 7,
+    Trepidation = 8,
+}
 
 const IRIS_PALETTE_PURPLE: [Rgb565; 8] = [ 
     Rgb565::CSS_INDIGO, 
@@ -102,21 +117,21 @@ static DISPLAY0_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 static DISPLAY1_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 
 // == Cross-core signaling stuff below
-static MODE_SETTING: AtomicUsize = AtomicUsize::new(0);
+static MODE_A_VALUE: AtomicUsize = AtomicUsize::new(0);
 static CUR_BRIGHTNESS: AtomicUsize = AtomicUsize::new(50);
 static CUR_IRIS_COLOR: AtomicU16 = AtomicU16::new(0);
 static CUR_LOOK_STEP: AtomicU8 = AtomicU8::new(0);
 static CUR_BG_DIRTY: AtomicBool = AtomicBool::new(true);
 static CUR_IRIS_DIRTY: AtomicBool = AtomicBool::new(true);
+static CUR_EMOTION: AtomicU8 = AtomicU8::new(EmotionExpression::Neutral as u8);
 
 static EYE_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u32, 4, 4, 1> = PubSubChannel::new();
 
 type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
-// type Spi1DeviceType = SpiDevice<'static, NoopRawMutex, Spi<'static, SPI1, Async>, Output<'static>>;
 
 // type Spi0CsnType = embassy_rp::Peri<'static,peripherals::PIN_4>;
+// type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_9>;
 type Spi0CsnType = embassy_rp::Peri<'static,peripherals::PIN_17>;
-// type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_9> ;
 type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_13> ;
 
 fn render_one_bg_image<T>(
@@ -348,17 +363,17 @@ fn draw_one_full_eye(frame_buf: &mut FullFrameBuf, look_correction: f32, pupil_c
 
 // TODO make this a real interrupt handler rather than parking waiting on falling edge?
 #[embassy_executor::task]
-async fn gpio_task(mut pin: Input<'static>) {
+async fn mode_a_button_task(mut pin: Input<'static>) {
     loop {
-        let mut mode_val = MODE_SETTING.load(Ordering::Relaxed);
+        let mut mode_a_val = MODE_A_VALUE.load(Ordering::Relaxed);
         pin.wait_for_falling_edge().await;
         
         // Introduce a debounce delay
         Timer::after_millis(10).await; 
 
         if pin.is_low() {
-            mode_val = (mode_val + 1) % NUM_A_MODES;
-            MODE_SETTING.store(mode_val, Ordering::Relaxed);
+            mode_a_val = (mode_a_val + 1) % MODE_A_COUNT;
+            MODE_A_VALUE.store(mode_a_val, Ordering::Relaxed);
         }
     }
 }
@@ -378,11 +393,11 @@ async fn main(spawner: Spawner) {
     info!("Main MSP (Core0) = {:#010X}", sp);
 
     // prep for reading mode change events
-    MODE_SETTING.store(1, Ordering::Relaxed);
+    MODE_A_VALUE.store(1, Ordering::Relaxed);
 
     let mut led = Output::new(p.PIN_25, Level::High);
 
-    // LCD display 0: ST7789V pins, flavor: original SPI0 
+    // // LCD display 0: ST7789V pins, flavor: original SPI0 
     // let bl0 = p.PIN_7; // --> BL
     // let rst0 = p.PIN_6; // --> RST
     // let dcx0 = p.PIN_5; // --> DC
@@ -444,9 +459,8 @@ async fn main(spawner: Spawner) {
     // spawn the core0 drawing task
     unwrap!(spawner.spawn(core0_drawing_task(spi0,cs0,rst0_out,dcx0_out,bl0_pwm_out)));
 
-    // read Mode0 button events
-    let mode0_button_pin = Input::new(p.PIN_22, Pull::Up);
-    unwrap!(spawner.spawn(gpio_task(mode0_button_pin)));
+    // read Mode A button events
+    unwrap!(spawner.spawn(mode_a_button_task(Input::new(p.PIN_22, Pull::Up))));
 
     let mut iris_dirty = true ;
     let mut bg_dirty = true;
@@ -467,7 +481,7 @@ async fn main(spawner: Spawner) {
     // Main drawing loop, runs forever
     loop {
         led.set_low();
-        let mode_val = MODE_SETTING.load(Ordering::Relaxed);
+        let mode_val = MODE_A_VALUE.load(Ordering::Relaxed);
         let mut brightness_percent = CUR_BRIGHTNESS.load(Ordering::Relaxed);
 
         let loop_start_micros = Instant::now().as_micros();
@@ -477,6 +491,7 @@ async fn main(spawner: Spawner) {
 
          let iris_color: Rgb565 =
             if mode_val == 0 { 
+                CUR_EMOTION.store(EmotionExpression::Neutral as u8, Ordering::Relaxed);
                 frame_render_gap_usec = 500;
                 Rgb565::CSS_MAGENTA 
             }
@@ -486,6 +501,7 @@ async fn main(spawner: Spawner) {
                 Rgb565::CSS_RED 
             }
             else if mode_val == 2 {
+                CUR_EMOTION.store(EmotionExpression::Happy as u8, Ordering::Relaxed);
                 iris_dirty = true;
                 let color_idx = loop_count % IRIS_PALETTE_SPECTRUM.len();
                 IRIS_PALETTE_SPECTRUM[color_idx]
@@ -583,17 +599,17 @@ where T: embassy_rp::spi::Instance
             DISPLAY1_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES])
         };
 
-    // someday this may change periodically as emotions change
-    let eyeframe_bg_qoi = {
-        if is_left {
-             Qoi::new(include_bytes!("../img/eye-frame-left-olive.qoi")).unwrap()
-        }
-        else {
-            Qoi::new(include_bytes!("../img/eye-frame-right-olive.qoi")).unwrap()
-        }
+    // init a set of Qoi images to read from flash (.rodata)
+    let bgi_neutral_qoi = {
+        if is_left { Qoi::new(include_bytes!("../img/eye-frame-left-neut.qoi")).unwrap()}
+        else { Qoi::new(include_bytes!("../img/eye-frame-right-neut.qoi")).unwrap() }
+    };
+    let bgi_happy_qoi = {
+        if is_left { Qoi::new(include_bytes!("../img/eye-frame-left-happy.qoi")).unwrap()}
+        else { Qoi::new(include_bytes!("../img/eye-frame-right-happy.qoi")).unwrap() }
     };
 
-    let eyeframe_bg_img =  Image::new(&eyeframe_bg_qoi, Point::new(0,0));
+    let mut eyeframe_bg_img =  Image::new(&bgi_neutral_qoi, Point::new(0,0));
     let mut display_dirty = true;
     let pupil_ctr_val = {
         if is_left { LEFT_PUPIL_CTR }
@@ -601,12 +617,15 @@ where T: embassy_rp::spi::Instance
     };
 
     let mut eye_ready_sub = EYE_READY_CHANNEL.subscriber().unwrap();
+    let mut last_emotion_val = EmotionExpression::Neutral;
 
     loop {
+        // sync on eye parameters data ready
         let _eye_ready_msg = eye_ready_sub.next_message_pure().await;
         let bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
         let iris_dirty = CUR_IRIS_DIRTY.load(Ordering::Relaxed);
         let brightness_percent: u8 = CUR_BRIGHTNESS.load(Ordering::Relaxed).try_into().unwrap();
+        let emotion_val: EmotionExpression = CUR_EMOTION.load(Ordering::Relaxed).try_into().unwrap();
         backlight_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
 
         let look_step = CUR_LOOK_STEP.load(Ordering::Relaxed);
@@ -617,6 +636,20 @@ where T: embassy_rp::spi::Instance
         };
 
         let iris_color: Rgb565 = Rgb565::from(RawU16::new(CUR_IRIS_COLOR.load(Ordering::Relaxed)));
+
+        if emotion_val != last_emotion_val {
+            eyeframe_bg_img =
+                match emotion_val {
+                    EmotionExpression::Happy => {
+                        Image::new(&bgi_happy_qoi, Point::new(0,0))
+                    },
+                    _ => {
+                        Image::new(&bgi_neutral_qoi, Point::new(0,0))
+                    }
+                };
+
+            last_emotion_val = emotion_val;
+        }
 
         if bg_dirty || display_dirty {
             render_one_bg_image(disp_frame_buf, &eyeframe_bg_img);
@@ -639,6 +672,7 @@ where T: embassy_rp::spi::Instance
                 .unwrap();
             display_dirty = false;
         }
+
     }
 }
 
