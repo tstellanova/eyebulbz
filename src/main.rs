@@ -4,7 +4,6 @@
 use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
-// use rp235x_hal::rosc::RingOscillator;
 use core::{default::Default};//sync::atomic::{AtomicBool}
 use portable_atomic::{AtomicBool, AtomicU16, AtomicU8, AtomicUsize, Ordering};
 
@@ -14,7 +13,8 @@ use embassy_rp:: {
     self as hal, block::ImageDef, gpio::{Input, Level, Output, Pull}, peripherals::{self, SPI0, SPI1}, pwm::{self, Pwm, SetDutyCycle}, spi::{self, Async, Spi},
 };
 
-use embassy_sync::{blocking_mutex::{raw::{CriticalSectionRawMutex, NoopRawMutex}, CriticalSectionMutex, NoopMutex}, mutex::Mutex, signal::Signal};
+
+use embassy_sync::{blocking_mutex::{raw::{CriticalSectionRawMutex, NoopRawMutex}}, mutex::Mutex, pubsub::PubSubChannel};
 use embassy_time::{Delay, Instant, Timer};
 
 use embedded_graphics::{
@@ -96,28 +96,28 @@ const IRIS_PALETTE_SPECTRUM: [Rgb565; 6] = [ Rgb565::CSS_BLUE_VIOLET, Rgb565::CS
 #[link_section = ".core1_stack"]
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 
-
-// static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
-
 
 static DISPLAY0_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 static DISPLAY1_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 
-static MODE_SETTING: AtomicUsize = AtomicUsize::new(3);
+// == Cross-core signaling stuff below
+static MODE_SETTING: AtomicUsize = AtomicUsize::new(0);
 static CUR_BRIGHTNESS: AtomicUsize = AtomicUsize::new(50);
 static CUR_IRIS_COLOR: AtomicU16 = AtomicU16::new(0);
 static CUR_LOOK_STEP: AtomicU8 = AtomicU8::new(0);
 static CUR_BG_DIRTY: AtomicBool = AtomicBool::new(true);
 static CUR_IRIS_DIRTY: AtomicBool = AtomicBool::new(true);
 
-
-
-static EYE_START_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-// static EYE_END_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static EYE_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u32, 4, 4, 1> = PubSubChannel::new();
 
 type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
+// type Spi1DeviceType = SpiDevice<'static, NoopRawMutex, Spi<'static, SPI1, Async>, Output<'static>>;
 
+// type Spi0CsnType = embassy_rp::Peri<'static,peripherals::PIN_4>;
+type Spi0CsnType = embassy_rp::Peri<'static,peripherals::PIN_17>;
+// type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_9> ;
+type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_13> ;
 
 fn render_one_bg_image<T>(
     frame_buf: &mut FullFrameBuf, 
@@ -365,7 +365,6 @@ async fn gpio_task(mut pin: Input<'static>) {
 
 
 
-// type Spi1DeviceType = SpiDevice<'static, NoopRawMutex, Spi<'static, SPI1, Async>, Output<'static>>;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -379,26 +378,41 @@ async fn main(spawner: Spawner) {
     info!("Main MSP (Core0) = {:#010X}", sp);
 
     // prep for reading mode change events
-    MODE_SETTING.store(3, Ordering::Relaxed);
-
+    MODE_SETTING.store(1, Ordering::Relaxed);
 
     let mut led = Output::new(p.PIN_25, Level::High);
 
-    // LCD display 0: ST7789V pins
-    let bl0 = p.PIN_7; // --> BL
-    let rst0 = p.PIN_6; // --> RST
-    let dcx0 = p.PIN_5; // --> DC
-    let cs0 = p.PIN_4; // SPI0 CSN --> CS
-    let mosi0 = p.PIN_3; // SPI0 MosiPin --> DIN 
-    let sck0 = p.PIN_2; // SPI0 SCK -->  CLK
+    // LCD display 0: ST7789V pins, flavor: original SPI0 
+    // let bl0 = p.PIN_7; // --> BL
+    // let rst0 = p.PIN_6; // --> RST
+    // let dcx0 = p.PIN_5; // --> DC
+    // let cs0 = p.PIN_4; // SPI0 CSN --> CS
+    // let sda0 = p.PIN_3; // SPI0 MosiPin --> DIN 
+    // let sck0 = p.PIN_2; // SPI0 SCK -->  CLK
 
-    // // LCD display 1: ST7789V pins
-    let bl1 = p.PIN_14;// --> BL
-    let rst1 = p.PIN_13;// --> RST
-    let dcx1 = p.PIN_12; // --> DC
-    let mosi1 = p.PIN_11; // SPI1 MosiPin --> DIN
-    let sck1 = p.PIN_10; // SPI1 SCK --> CLK
-    let cs1 = p.PIN_9; // SPI1 CSN --> CS
+    // LCD display 0: ST7789V pins, flavor: SPI0 on opposite side of Pico-2 board from SPI1 
+    let sck0 = p.PIN_18; // SPI0 SCK -->  SCL/CLK
+    let sda0 = p.PIN_19; // SPI0 TX --> SDA/DIN 
+    let rst0 = p.PIN_20; // --> RST
+    let dcx0 = p.PIN_21; // --> DC
+    let bl0 = p.PIN_16; // --> BL
+    let cs0 = p.PIN_17; // SPI0 CSN --> CS
+
+    // // LCD display 1: ST7789V pins, flavor: original SPI1
+    // let bl1 = p.PIN_14;// --> BL
+    // let rst1 = p.PIN_13;// --> RST
+    // let dcx1 = p.PIN_12; // --> DC
+    // let sda1 = p.PIN_11; // SPI1 TX --> SDA/DIN
+    // let sck1 = p.PIN_10; // SPI1 SCK --> CLK
+    // let cs1 = p.PIN_9; // SPI1 CSN --> CS
+
+    // LCD display 1: ST7789V pins, flavori: linear SPI1
+    let bl1 = p.PIN_15;// --> BL
+    let dcx1 = p.PIN_14; // --> DC
+    let cs1 = p.PIN_13; // SPI1 CSN --> CS
+    let rst1 = p.PIN_12; // --> DC
+    let sda1 = p.PIN_11; // SPI1 TX --> SDA/DIN
+    let sck1 = p.PIN_10; // SPI1 SCK --> SCL/CLK
 
     let mut display_config = spi::Config::default();
     display_config.frequency = DISPLAY_FREQ;
@@ -407,20 +421,22 @@ async fn main(spawner: Spawner) {
 
 
     let spi0: Spi<'_, embassy_rp::peripherals::SPI0, Async> = 
-        Spi::new_txonly(p.SPI0, sck0, mosi0, p.DMA_CH0, display_config.clone());
+        Spi::new_txonly(p.SPI0, sck0, sda0, p.DMA_CH0, display_config.clone());
     let dcx0_out = Output::new(dcx0, Level::Low);
     let rst0_out = Output::new(rst0, Level::Low);
-    let bl0_pwm_out: Pwm<'_> = Pwm::new_output_b(p.PWM_SLICE3, bl0, pwm::Config::default());//TODO doesn't work?
+    // let bl0_pwm_out: Pwm<'_> = Pwm::new_output_b(p.PWM_SLICE3, bl0, pwm::Config::default());//TODO doesn't work?
+    let bl0_pwm_out: Pwm<'_> = Pwm::new_output_a(p.PWM_SLICE0, bl0, pwm::Config::default());//TODO doesn't work?
 
     let spi1: Spi<'_, embassy_rp::peripherals::SPI1, Async> = 
-        Spi::new_txonly(p.SPI1, sck1, mosi1, p.DMA_CH1, display_config.clone());
+        Spi::new_txonly(p.SPI1, sck1, sda1, p.DMA_CH1, display_config.clone());
     let dcx1_out = Output::new(dcx1, Level::Low);
     let rst1_out = Output::new(rst1, Level::Low);
 
     embassy_rp::multicore::spawn_core1(p.CORE1, unsafe { &mut CORE1_STACK },
         move || {
             let executor1 = EXECUTOR1.init(Executor::new());
-            let bl1_pwm_out: Pwm<'static> = Pwm::new_output_a(p.PWM_SLICE7, bl1, pwm::Config::default());
+            // let bl1_pwm_out: Pwm<'static> = Pwm::new_output_a(p.PWM_SLICE7, bl1, pwm::Config::default());
+            let bl1_pwm_out: Pwm<'static> = Pwm::new_output_b(p.PWM_SLICE7, bl1, pwm::Config::default());
             executor1.run(|spawner| spawner.spawn(core1_drawing_task( spi1, cs1, rst1_out, dcx1_out,  bl1_pwm_out)).unwrap());
         }
     );
@@ -437,7 +453,7 @@ async fn main(spawner: Spawner) {
 
     let mut loop_count: usize = 0;
     let mut loop_elapsed_total: u64 = 0;
-    let mut push_elapsed_total: u64 = 0;
+    let mut recalc_elapsed_total: u64 = 0;
 
     let mut rnd_src = embassy_rp::clocks::RoscRng;
 
@@ -445,6 +461,8 @@ async fn main(spawner: Spawner) {
 
     let mut brightness_ascending: bool = true;
     let mut old_mode_val: usize = 555;
+
+    let eye_ready_pub = EYE_READY_CHANNEL.publisher().unwrap();
 
     // Main drawing loop, runs forever
     loop {
@@ -455,27 +473,32 @@ async fn main(spawner: Spawner) {
         let loop_start_micros = Instant::now().as_micros();
 
         let mut look_step = (loop_count % 3).try_into().unwrap();
+        let mut frame_render_gap_usec = 100;
 
          let iris_color: Rgb565 =
             if mode_val == 0 { 
+                frame_render_gap_usec = 500;
                 Rgb565::CSS_MAGENTA 
             }
             else if mode_val == 1 { 
+                frame_render_gap_usec = 200;
                 iris_dirty = true;
-                look_step = (loop_count % 3).try_into().unwrap();
                 Rgb565::CSS_RED 
             }
             else if mode_val == 2 {
+
                 iris_dirty = true;
                 let color_idx = loop_count % IRIS_PALETTE_SPECTRUM.len();
                 IRIS_PALETTE_SPECTRUM[color_idx]
             }
             else if mode_val == 3 {
+                frame_render_gap_usec = 5000;
                 iris_dirty = true;
                 let color_idx = loop_count % IRIS_PALETTE_PURPLE.len();
                 IRIS_PALETTE_PURPLE[color_idx]  
             }
             else {
+                frame_render_gap_usec = 1000;
                 let mut rng_bytes:[u8;4] = [0; 4];
                 rnd_src.fill_bytes(&mut rng_bytes);
                 look_step = ( rng_bytes[3] % 3).try_into().unwrap();
@@ -487,7 +510,7 @@ async fn main(spawner: Spawner) {
         if old_mode_val != mode_val {
             loop_count = 0;
             loop_elapsed_total = 0;
-            push_elapsed_total = 0;
+            recalc_elapsed_total = 0;
             old_mode_val = mode_val;
             iris_dirty = true;
             bg_dirty = true;
@@ -517,10 +540,11 @@ async fn main(spawner: Spawner) {
         CUR_BRIGHTNESS.store(brightness_percent, Ordering::Relaxed);
 
         // At this point, all of the config data points required to re-render the frame have been calculated
-        // and passed as atomics. Push a Signal to sync with the other eye.
-        EYE_START_SIGNAL.signal(());
+        // and passed as atomics. Publish a message to start rendering.
+
+        eye_ready_pub.publish(loop_count.try_into().unwrap()).await;
         // give some time to inter-task stuff
-        Timer::after_millis(30).await;
+        Timer::after_millis(frame_render_gap_usec).await;
 
         let push_start_micros = Instant::now().as_micros();
         let loop_finished_micros: u64 = Instant::now().as_micros();
@@ -531,13 +555,13 @@ async fn main(spawner: Spawner) {
 
         loop_count += 1;
         let loop_elapsed_micros = loop_finished_micros - loop_start_micros;
-        let push_elapsed_micros = loop_finished_micros - push_start_micros;
-        push_elapsed_total += push_elapsed_micros;
+        let recalc_frame_micros = loop_finished_micros - push_start_micros;
+        recalc_elapsed_total += recalc_frame_micros;
         loop_elapsed_total += loop_elapsed_micros;
         if loop_count % 100 == 0 {
             let avg_loop_elapsed = loop_elapsed_total / loop_count as u64;
-            let avg_push_elapsed = push_elapsed_total / loop_count as u64;
-            info!("avg_elapsed micros: {} {}", avg_push_elapsed, avg_loop_elapsed);
+            let avg_recalc_elapsed = recalc_elapsed_total / loop_count as u64;
+            info!("avg_elapsed micros: {} {}", avg_recalc_elapsed, avg_loop_elapsed);
         }
     }
 }
@@ -577,8 +601,10 @@ where T: embassy_rp::spi::Instance
         else { RIGHT_PUPIL_CTR}
     };
 
+    let mut eye_ready_sub = EYE_READY_CHANNEL.subscriber().unwrap();
+
     loop {
-        EYE_START_SIGNAL.wait().await;
+        let _eye_ready_msg = eye_ready_sub.next_message_pure().await;
         let bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
         let iris_dirty = CUR_IRIS_DIRTY.load(Ordering::Relaxed);
         let brightness_percent: u8 = CUR_BRIGHTNESS.load(Ordering::Relaxed).try_into().unwrap();
@@ -614,9 +640,6 @@ where T: embassy_rp::spi::Instance
                 .unwrap();
             display_dirty = false;
         }
-        // EYE_END_SIGNAL.signal(());
-        // give some time to inter-task stuff
-        Timer::after_millis(5).await;
     }
 }
 
@@ -624,7 +647,7 @@ where T: embassy_rp::spi::Instance
 #[embassy_executor::task]
 async fn core0_drawing_task(
     spi_raw: Spi<'static, SPI0, embassy_rp::spi::Async>,
-    cs_peri: embassy_rp::Peri<'static,peripherals::PIN_4> , 
+    cs_peri: Spi0CsnType , 
     rst_out: Output<'static>,
     dcx_out: Output<'static>,
     backlight_pwm_out: Pwm<'static> ) {
@@ -657,7 +680,7 @@ async fn core0_drawing_task(
 #[embassy_executor::task]
 async fn core1_drawing_task(
     spi_raw: Spi<'static, SPI1, embassy_rp::spi::Async>,
-    cs_peri: embassy_rp::Peri<'static,peripherals::PIN_9> , 
+    cs_peri: Spi1CsnType , 
     rst_out: Output<'static>,
     dcx_out: Output<'static>,
     backlight_pwm_out: Pwm<'static> ) {
