@@ -79,8 +79,8 @@ const EYELASH_DIAMETER: u32 = 310u32;
 const LEFT_PUPIL_CTR: Point = Point::new((DISPLAY_WIDTH-148) as i32,159) ; //- Size::new(0, DISPLAY_HEIGHT as u32 / 2);
 const RIGHT_PUPIL_CTR: Point = Point::new(148,159); //  - Size::new(0, DISPLAY_HEIGHT as u32 / 2);
 
+// TODO convert this to enumerated modes
 const MODE_A_COUNT: u8 = 5;
-const MODE_B_COUNT: u8 = 5;
 
 #[derive(Debug, Eq, PartialEq, TryFromPrimitive)]
 #[repr(u8)]
