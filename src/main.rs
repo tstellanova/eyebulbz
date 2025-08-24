@@ -5,7 +5,8 @@ use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
 use core::{default::Default};//sync::atomic::{AtomicBool}
-use portable_atomic::{AtomicBool, AtomicU16, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicUsize, Ordering};
+
 
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_executor::{Spawner, Executor};
@@ -65,16 +66,19 @@ const PIXEL_SIZE: u16 = 2; // RGB565 = 2 bytes per pixel
 const FRAME_SIZE_BYTES: usize = DISPLAY_WIDTH as usize * DISPLAY_HEIGHT as usize * PIXEL_SIZE as usize;
 type FullFrameBuf = [u8; FRAME_SIZE_BYTES];
 
-const IRIS_DIAM: u16 = 122;
+
+const IRIS_DIAM: u16 = 120;
 const PUPIL_DIAM: u16 = IRIS_DIAM/2;
-const HIGHLIGHT_DIAM: i32 = 30;
+const HIGHLIGHT_DIAM: u16 = PUPIL_DIAM/2;
 
 const INNER_EYE_DIM: u16 = IRIS_DIAM + 4;
-
 const FARPOINT_CENTER: Point = Point::new(160, 240);
-
 const EYELASH_DIAMETER: u32 = 310u32;
 
+const DISPLAY_HALF_WIDTH: i32 = (DISPLAY_WIDTH/2) as i32;
+const PUPIL_H_OFFSET: i32 = (DISPLAY_WIDTH / 12) as i32;
+const DISPLAY_HALF_HEIGHT: i32 = (DISPLAY_HEIGHT/2) as i32;
+const PUPIL_V_OFFSET: i32 = (DISPLAY_HEIGHT/8) as i32 ;
 
 const LEFT_PUPIL_CTR: Point = Point::new((DISPLAY_WIDTH-148) as i32,159) ; //- Size::new(0, DISPLAY_HEIGHT as u32 / 2);
 const RIGHT_PUPIL_CTR: Point = Point::new(148,159); //  - Size::new(0, DISPLAY_HEIGHT as u32 / 2);
@@ -82,18 +86,31 @@ const RIGHT_PUPIL_CTR: Point = Point::new(148,159); //  - Size::new(0, DISPLAY_H
 // TODO convert this to enumerated modes
 const MODE_A_COUNT: u8 = 5;
 
-#[derive(Debug, Eq, PartialEq, TryFromPrimitive)]
+const INTERFRAME_DELAY_MILLIS:usize = 30;
+
+// Look direction is a 3x3 grid, with row-col, 00 is northwest, 22 is southeast, 11 is straight ahead
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
 #[repr(u8)]
 enum EmotionExpression {
-    Neutral = 0,
-    Happy = 1,
-    // Surprise = 2,
-    // Thoughtful = 3,
-    // Curious = 4,
-    // Confused = 5,
-    // Shy = 6,
-    // Love = 7,
-    // Trepidation = 8,
+    Neutral11, // straight ahead
+    // Neutral10 = 1, // west
+    // Neutral12 = 2, // east
+    // Neutral00 = 3, // northwest
+    // Neutral01 = 4, // north 
+    // Neutral02 = 5, // northeast
+    // Neutral20 = 6, // southwest
+    // Neutral21 = 7, // south
+    // Netural22 = 8, // southeast
+    // Happy = 9,
+    Surprise,
+    // Curious 
+    // Skeptical
+    // Thoughtful
+    // Confused
+    // Shy
+    // Love
+    // Trepidation 
     MaxCount
 }
 
@@ -121,14 +138,35 @@ static DISPLAY1_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
 // == Cross-core signaling stuff below
 static MODE_A_VALUE: AtomicU8 = AtomicU8::new(0);
 static MODE_B_VALUE: AtomicU8 = AtomicU8::new(0);
-static CUR_BRIGHTNESS: AtomicUsize = AtomicUsize::new(50);
+static CUR_BRIGHTNESS_PCT: AtomicU8 = AtomicU8::new(50);
 static CUR_IRIS_COLOR: AtomicU16 = AtomicU16::new(0);
 static CUR_LOOK_STEP: AtomicU8 = AtomicU8::new(0);
 static CUR_BG_DIRTY: AtomicBool = AtomicBool::new(true);
 static CUR_IRIS_DIRTY: AtomicBool = AtomicBool::new(true);
-static CUR_EMOTION: AtomicU8 = AtomicU8::new(EmotionExpression::Neutral as u8);
+static CUR_EMOTION: AtomicU8 = AtomicU8::new(EmotionExpression::Neutral11 as u8);
 
 static EYE_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u32, 4, 4, 1> = PubSubChannel::new();
+
+static ALL_EYEBGS_LEFT: [&[u8]; EmotionExpression::MaxCount as usize] = [
+    // include_bytes!("../img/eyebg-l-neutral-11.qoi"),
+    include_bytes!("../img/eye-frame-left-olive.qoi"), // neutral
+    // include_bytes!("../img/eyebg-l-happy-11.qoi"),
+    include_bytes!("../img/eye-frame-left.qoi"), //surprise
+    // include_bytes!("../img/eyebg-l-surprise-11.qoi"),
+    // include_bytes!("../img/eyebg-l-sad-11.qoi"),
+    // include_bytes!("../img/eyebg-l-curious-11.qoi"),
+    // include_bytes!("../img/eyebg-l-skeptical-11.qoi"),
+];
+
+static ALL_EYEBGS_RIGHT: [&[u8]; EmotionExpression::MaxCount as usize] = [
+    include_bytes!("../img/eyebg-r-neutral-11.qoi"),
+    // include_bytes!("../img/eyebg-r-happy-11.qoi"),
+    include_bytes!("../img/eyebg-r-surprise-11.qoi"),
+    // include_bytes!("../img/eyebg-r-sad-11.qoi"),
+    // include_bytes!("../img/eyebg-r-curious-11.qoi"),
+    // include_bytes!("../img/eyebg-r-skeptical-11.qoi"),
+];
+
 
 type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
 
@@ -266,89 +304,6 @@ where
     Ok(())
 }
 
-
-// fn draw_symmetric_inner_eye<T>(
-//     display: &mut T, 
-//     pupil_ctr: &Point, 
-//     iris_diam: i32, 
-//     pupil_diam: i32, 
-//     iris_color: Rgb565) -> Result<(), T::Error>
-// where
-//     T: DrawTarget<Color = Rgb565>,
-// {   
-//     let pupil_diam_dim: u32 = pupil_diam.try_into().unwrap();
-//     let iris_diam_dim: u32 = iris_diam.try_into().unwrap();
-
-//     let iris_style = PrimitiveStyleBuilder::new()
-//         .stroke_width(2)
-//         .stroke_color(Rgb565::BLACK)
-//         .fill_color(iris_color)
-//         .build();
-
-//     // // behind iris
-//     // Circle::with_center(*pupil_ctr, iris_diam_dim + 4)
-//     //     .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-//     //     .draw(display)?;
-
-//     // iris
-//     Circle::with_center(*pupil_ctr, iris_diam_dim)
-//         .into_styled(iris_style)
-//         .draw(display)?;
-
-//     // shaded iris
-//     let shaded_iris_color = Rgb565::new(iris_color.r()/2, iris_color.g()/2, iris_color.b()/2);
-//     let iris_shade_start = Angle::from_degrees(-15.0);
-//     let iris_shade_sweep = Angle::from_degrees(-180.0 + 15.0) - iris_shade_start;
-//     Sector::with_center(*pupil_ctr, iris_diam_dim, iris_shade_start, iris_shade_sweep)
-//         .into_styled(PrimitiveStyle::with_fill(shaded_iris_color))
-//         .draw(display)?;
-
-//     // pupil
-//     Circle::with_center(*pupil_ctr, pupil_diam_dim )
-//         .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-//         .draw(display)?;
-
-//     // draw stuff that shades iris
-//     // eyelash inner (liner)
-//     build_styled_arc(FARPOINT_CENTER + Size::new(0,30), EYELASH_DIAMETER+30, 
-//         -45.0, -90.0, Rgb565::CYAN, 8).draw(display)?;
-
-//     // eyelash outer
-//     build_styled_arc(FARPOINT_CENTER, EYELASH_DIAMETER, 
-//         -35.0, -110.0, Rgb565::CSS_INDIGO, 12).draw(display)?;
-
-//     Ok(())
-// }
-
-// fn draw_asymmetric_inner_eye<T>(
-//     display: &mut T, 
-//     _is_left: bool, 
-//     eye_ctr: &Point,  
-//     pupil_diam: i32, 
-//     highlight_diam: i32,
-// )
-// where
-//     T: DrawTarget<Color = Rgb565>,
-// {   
-//     const HIGHLIGHT_Y_SHIFT: i32 = 8;
-//     let pupil_radius = pupil_diam / 2;
-//     let highlight_diam_dim: u32 = highlight_diam.try_into().unwrap();
-
-//     // two highlights are symmetric about the pupil center
-//     let highlight_ctr = Point::new(eye_ctr.x - pupil_radius,  (eye_ctr.y - pupil_radius/2) - HIGHLIGHT_Y_SHIFT );
-//     let small_highlight_ctr = Point::new(eye_ctr.x + pupil_radius, (eye_ctr.y + pupil_radius/2) + HIGHLIGHT_Y_SHIFT);
-
-//     // lens highlight large
-//     let _ = Circle::with_center(highlight_ctr, highlight_diam_dim )
-//         .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
-//         .draw(display);
-
-//     // lens highlight small
-//     let _ = Circle::with_center(small_highlight_ctr, highlight_diam_dim/2) 
-//         .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
-//         .draw(display);
-
-// }
 
 fn draw_one_full_eye(frame_buf: &mut FullFrameBuf, look_correction: f32, pupil_ctr: &Point, pupil_diam: i32, iris_diam: i32,  iris_color: Rgb565, highlight_diam: i32) {
     let mut raw_fb =
@@ -508,13 +463,12 @@ async fn main(spawner: Spawner) {
         let mode_a_val = MODE_A_VALUE.load(Ordering::Relaxed);
         let mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
 
-        let mut brightness_percent = CUR_BRIGHTNESS.load(Ordering::Relaxed);
+        let mut brightness_percent = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
 
         let loop_start_micros = Instant::now().as_micros();
 
         let mut look_step = (loop_count % 3).try_into().unwrap();
-        let mut frame_render_gap_usec = 100;
-
+        let mut frame_render_gap_millis = INTERFRAME_DELAY_MILLIS;
 
         if old_mode_b_val != mode_b_val {
             info!("old mode_b: {} new: {}", old_mode_b_val, mode_b_val);
@@ -530,34 +484,38 @@ async fn main(spawner: Spawner) {
 
 
         let iris_color: Rgb565 =
-            if mode_a_val == 0 { 
-                frame_render_gap_usec = 500;
-                Rgb565::CSS_MAGENTA 
-            }
-            else if mode_a_val == 1 { 
-                frame_render_gap_usec = 100;
-                iris_dirty = true;
-                Rgb565::CSS_RED 
-            }
-            else if mode_a_val == 2 {
-                iris_dirty = true;
-                let color_idx = loop_count % IRIS_PALETTE_SPECTRUM.len();
-                IRIS_PALETTE_SPECTRUM[color_idx]
-            }
-            else if mode_a_val == 3 {
-                frame_render_gap_usec = 200;
-                iris_dirty = true;
-                let color_idx = loop_count % IRIS_PALETTE_PURPLE.len();
-                IRIS_PALETTE_PURPLE[color_idx]  
-            }
-            else {
-                frame_render_gap_usec = 250;
-                let mut rng_bytes:[u8;4] = [0; 4];
-                rnd_src.fill_bytes(&mut rng_bytes);
-                look_step = ( rng_bytes[3] % 3).try_into().unwrap();
-                iris_dirty = true;
-                Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2])
-            };
+            match mode_a_val {
+                0 => { 
+                    look_step = 0;
+                    frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 16;
+                    Rgb565::CSS_MAGENTA 
+                },
+                1 => { 
+                    frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 8;
+                    iris_dirty = true;
+                    Rgb565::CSS_RED 
+                },
+                2 => {
+                    frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 4;
+                    iris_dirty = true;
+                    let color_idx = loop_count % IRIS_PALETTE_PURPLE.len();
+                    IRIS_PALETTE_PURPLE[color_idx]  
+                },
+                3 => {
+                    frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 1;
+                    iris_dirty = true;
+                    let color_idx = loop_count % IRIS_PALETTE_SPECTRUM.len();
+                    IRIS_PALETTE_SPECTRUM[color_idx]
+                },
+                _ => {
+                    frame_render_gap_millis = INTERFRAME_DELAY_MILLIS;
+                    let mut rng_bytes:[u8;4] = [0; 4];
+                    rnd_src.fill_bytes(&mut rng_bytes);
+                    look_step = ( rng_bytes[3] % 3).try_into().unwrap();
+                    iris_dirty = true;
+                    Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2])
+                }
+        };
     
         // TODO we keep mode A and mode B separate for now-- eg Mode B might be inner-eye specific at some point
         if old_mode_a_val != mode_a_val  {
@@ -569,19 +527,29 @@ async fn main(spawner: Spawner) {
             old_mode_a_val = mode_a_val;
         }
 
+        // 5000/480 = steps per ten seconds
+        // 100 / num_steps = pct per step
         // TODO brightness cycling based on mode?
+        //  100 / (10000 / frame_render_gap_millis);
+        let brightstep_pct_raw =  100*frame_render_gap_millis / 5000; //fade pwm over this interval
+        // info!("intergap_ms: {} brightstep_pct_raw: {} ",frame_render_gap_millis, brightstep_pct_raw);
+        let brightstep_pct: u8 = u8::max(brightstep_pct_raw.try_into().unwrap(), 2); //fade pwm over this interval
+        // info!("brightstep_pct: {}", brightstep_pct);
+
         if brightness_ascending {
-            brightness_percent += 4;
+            brightness_percent += brightstep_pct;
             if brightness_percent >= 100 {
                 brightness_percent = 100;
                 brightness_ascending = false;
             }
         }
         else {
-            brightness_percent -= 4;
-            if brightness_percent == 0 { 
+            if brightness_percent < brightstep_pct { 
                 brightness_percent = 5;
                 brightness_ascending = true; 
+            }
+            else {
+                brightness_percent -= brightstep_pct;
             }
         }
 
@@ -590,18 +558,20 @@ async fn main(spawner: Spawner) {
         CUR_IRIS_COLOR.store(iris_color.into_storage(), Ordering::Relaxed);
         CUR_IRIS_DIRTY.store(iris_dirty, Ordering::Relaxed);
         CUR_BG_DIRTY.store(bg_dirty, Ordering::Relaxed);
-        CUR_BRIGHTNESS.store(brightness_percent, Ordering::Relaxed);
+        CUR_BRIGHTNESS_PCT.store(brightness_percent, Ordering::Relaxed);
 
         // At this point, all of the config data points required to re-render the frame have been calculated
         // and passed as atomics. Publish a message to start rendering.
 
         eye_ready_pub.publish(loop_count.try_into().unwrap()).await;
-        // give some time to inter-task stuff
-        Timer::after_millis(frame_render_gap_usec).await;
+   
 
         let push_start_micros = Instant::now().as_micros();
         let loop_finished_micros: u64 = Instant::now().as_micros();
         led.set_high();
+
+        // give some time to inter-task stuff
+        Timer::after_millis(frame_render_gap_millis.try_into().unwrap()).await;
 
         iris_dirty = false;
         bg_dirty = false;
@@ -637,17 +607,12 @@ where T: embassy_rp::spi::Instance
             DISPLAY1_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES])
         };
 
-    // init a set of Qoi images to read from flash (.rodata)
-    let bgi_neutral_qoi = {
-        if is_left { Qoi::new(include_bytes!("../img/eye-frame-left-neut.qoi")).unwrap()}
-        else { Qoi::new(include_bytes!("../img/eye-frame-right-neut.qoi")).unwrap() }
-    };
-    let bgi_happy_qoi = {
-        if is_left { Qoi::new(include_bytes!("../img/eye-frame-left-happy.qoi")).unwrap()}
-        else { Qoi::new(include_bytes!("../img/eye-frame-right-happy.qoi")).unwrap() }
+    let mut cur_eyebg_qoi = {
+        if is_left { Qoi::new(ALL_EYEBGS_LEFT[EmotionExpression::Neutral11 as usize]).unwrap() }
+        else {Qoi::new(ALL_EYEBGS_RIGHT[EmotionExpression::Neutral11 as usize]).unwrap() }
     };
 
-    let mut eyeframe_bg_img =  Image::new(&bgi_neutral_qoi, Point::new(0,0));
+    let mut eyebg_img =  Image::new(&cur_eyebg_qoi, Point::new(0,0));
     let mut display_dirty = true;
     let pupil_ctr_val = {
         if is_left { LEFT_PUPIL_CTR }
@@ -655,14 +620,14 @@ where T: embassy_rp::spi::Instance
     };
 
     let mut eye_ready_sub = EYE_READY_CHANNEL.subscriber().unwrap();
-    let mut last_emotion_val = EmotionExpression::Neutral;
+    let mut last_emotion_val = EmotionExpression::Neutral11;
 
     loop {
         // sync on eye parameters data ready
         let _eye_ready_msg = eye_ready_sub.next_message_pure().await;
         let bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
         let iris_dirty = CUR_IRIS_DIRTY.load(Ordering::Relaxed);
-        let brightness_percent: u8 = CUR_BRIGHTNESS.load(Ordering::Relaxed).try_into().unwrap();
+        let brightness_percent: u8 = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed).try_into().unwrap();
         let emotion_val: EmotionExpression = CUR_EMOTION.load(Ordering::Relaxed).try_into().unwrap();
         backlight_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
 
@@ -676,27 +641,27 @@ where T: embassy_rp::spi::Instance
         let iris_color: Rgb565 = Rgb565::from(RawU16::new(CUR_IRIS_COLOR.load(Ordering::Relaxed)));
 
         if emotion_val != last_emotion_val {
-            eyeframe_bg_img =
-                match emotion_val {
-                    EmotionExpression::Happy => {
-                        Image::new(&bgi_happy_qoi, Point::new(0,0))
-                    },
-                    _ => {
-                        Image::new(&bgi_neutral_qoi, Point::new(0,0))
-                    }
+            cur_eyebg_qoi = 
+                if is_left {
+                    Qoi::new(ALL_EYEBGS_LEFT[emotion_val as usize]).unwrap()
+                } 
+                else {
+                    Qoi::new(ALL_EYEBGS_RIGHT[emotion_val as usize]).unwrap()
                 };
+
+            eyebg_img = Image::new(&cur_eyebg_qoi, Point::new(0,0));
 
             last_emotion_val = emotion_val;
         }
 
         if bg_dirty || display_dirty {
-            render_one_bg_image(disp_frame_buf, &eyeframe_bg_img);
+            render_one_bg_image(disp_frame_buf, &eyebg_img);
             display_dirty = true;
         }
 
         if iris_dirty || display_dirty {
             draw_one_full_eye(disp_frame_buf, look_correction, &pupil_ctr_val, PUPIL_DIAM.try_into().unwrap()
-            , IRIS_DIAM.try_into().unwrap(), iris_color, HIGHLIGHT_DIAM);
+            , IRIS_DIAM.try_into().unwrap(), iris_color, HIGHLIGHT_DIAM as i32);
             display_dirty = true;
         }
 
