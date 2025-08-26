@@ -127,6 +127,9 @@ const IRIS_PALETTE_PURPLE: [Rgb565; 8] = [
 ];
 const IRIS_PALETTE_SPECTRUM: [Rgb565; 6] = [ Rgb565::CSS_BLUE_VIOLET, Rgb565::CSS_DARK_MAGENTA,  Rgb565::CSS_MEDIUM_VIOLET_RED, Rgb565::CSS_PALE_VIOLET_RED, Rgb565::CSS_YELLOW_GREEN, Rgb565::CSS_LIME_GREEN];
 
+
+
+
 #[link_section = ".core1_stack"]
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 
@@ -148,8 +151,8 @@ static CUR_EMOTION: AtomicU8 = AtomicU8::new(EmotionExpression::Neutral11 as u8)
 static EYE_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u32, 4, 4, 1> = PubSubChannel::new();
 
 static ALL_EYEBGS_LEFT: [&[u8]; EmotionExpression::MaxCount as usize] = [
-    // include_bytes!("../img/eyebg-l-neutral-11.qoi"),
-    include_bytes!("../img/eye-frame-left-olive.qoi"), // neutral
+    include_bytes!("../img/eyebg-l-neutral-11.qoi"),
+    // include_bytes!("../img/eye-frame-left-olive.qoi"), // neutral
     // include_bytes!("../img/eyebg-l-happy-11.qoi"),
     include_bytes!("../img/eye-frame-left.qoi"), //surprise
     // include_bytes!("../img/eyebg-l-surprise-11.qoi"),
@@ -184,12 +187,12 @@ fn render_one_bg_image<T>(
         RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
     bg_img.draw(&mut raw_fb.color_converted()).unwrap(); 
 
-    build_styled_arc(FARPOINT_CENTER + Size::new(0,30), EYELASH_DIAMETER+30, 
-        -45.0, -90.0, Rgb565::CYAN, 8).draw(&mut raw_fb).unwrap();
+    // build_styled_arc(FARPOINT_CENTER + Size::new(0,30), EYELASH_DIAMETER+30, 
+    //     -45.0, -90.0, Rgb565::CYAN, 8).draw(&mut raw_fb).unwrap();
 
-    // eyelash outer
-    build_styled_arc(FARPOINT_CENTER, EYELASH_DIAMETER, 
-        -35.0, -110.0, Rgb565::CSS_INDIGO, 12).draw(&mut raw_fb).unwrap();
+    // // eyelash outer
+    // build_styled_arc(FARPOINT_CENTER, EYELASH_DIAMETER, 
+    //     -35.0, -110.0, Rgb565::CSS_INDIGO, 12).draw(&mut raw_fb).unwrap();
 
 }
 
@@ -202,6 +205,7 @@ fn build_styled_arc(center: Point, diam: u32, start_deg: f32, sweep_deg: f32, co
         PrimitiveStyle::with_stroke(color, stroke_width),
     )
 }
+
 
 fn draw_elliptic_inner_eye<T>(
     display: &mut T, 
@@ -218,10 +222,10 @@ where
     let pupil_diam_dim: u32 = pupil_diam.try_into().unwrap();
     let iris_diam_dim: u32 = iris_diam.try_into().unwrap();
 
-    // temporary -- render an idealized inner eye clipping region
-    let _ = Rectangle::with_center(*pupil_ctr, Size::new(INNER_EYE_DIM.into(),INNER_EYE_DIM.into()))
-    .into_styled(PrimitiveStyle::with_stroke(Rgb565::CSS_YELLOW, 3))
-    .draw(display);
+    // // temporary -- render an idealized inner eye clipping region
+    // let _ = Rectangle::with_center(*pupil_ctr, Size::new(INNER_EYE_DIM.into(),INNER_EYE_DIM.into()))
+    // .into_styled(PrimitiveStyle::with_stroke(Rgb565::CSS_YELLOW, 3))
+    // .draw(display);
 
     // fill with bg color
     let _ = Circle::with_center(*pupil_ctr, iris_diam_dim + 15) 
@@ -275,8 +279,8 @@ where
 
     // draw stuff that shades iris
     // eyelash inner (liner)
-    build_styled_arc(FARPOINT_CENTER + Size::new(0,30), EYELASH_DIAMETER+30, 
-        -45.0, -90.0, Rgb565::CYAN, 8).draw(display)?;
+    // build_styled_arc(FARPOINT_CENTER + Size::new(0,30), EYELASH_DIAMETER+30, 
+    //     -45.0, -90.0, Rgb565::CYAN, 8).draw(display)?;
 
     // eyelash outer
     // build_styled_arc(FARPOINT_CENTER, EYELASH_DIAMETER, 
@@ -533,7 +537,7 @@ async fn main(spawner: Spawner) {
         //  100 / (10000 / frame_render_gap_millis);
         let brightstep_pct_raw =  100*frame_render_gap_millis / 5000; //fade pwm over this interval
         // info!("intergap_ms: {} brightstep_pct_raw: {} ",frame_render_gap_millis, brightstep_pct_raw);
-        let brightstep_pct: u8 = u8::max(brightstep_pct_raw.try_into().unwrap(), 2); //fade pwm over this interval
+        let brightstep_pct: u8 = u8::max(brightstep_pct_raw.try_into().unwrap(), 1); //fade pwm over this interval
         // info!("brightstep_pct: {}", brightstep_pct);
 
         if brightness_ascending {
