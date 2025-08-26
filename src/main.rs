@@ -37,6 +37,9 @@ use lcd_async::{
 use tinyqoi::Qoi;
 use num_enum::TryFromPrimitive;
 
+use polyline_macro::include_polyline;
+
+
 use {defmt_rtt as _, panic_probe as _};
 
 /// Tell the Boot ROM about our application
@@ -661,6 +664,15 @@ where T: embassy_rp::spi::Instance
         if bg_dirty || display_dirty {
             render_one_bg_image(disp_frame_buf, &eyebg_img);
             display_dirty = true;
+        }
+
+        if bg_dirty && emotion_val == EmotionExpression::Surprise {
+            let polyline = include_polyline!("./img/heart_poly.csv", Rgb565::RED, 9);
+            
+            let mut raw_fb =
+                RawFrameBuf::<Rgb565, _>::new(disp_frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
+
+            polyline.draw(&mut raw_fb).unwrap();
         }
 
         if iris_dirty || display_dirty {
