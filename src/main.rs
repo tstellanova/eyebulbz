@@ -5,7 +5,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
 use core::{default::Default};//sync::atomic::{AtomicBool}
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 
 
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
@@ -19,7 +19,8 @@ use embassy_sync::{blocking_mutex::{raw::{CriticalSectionRawMutex, NoopRawMutex}
 use embassy_time::{Delay, Instant, Timer};
 
 use embedded_graphics::{
-    image::Image, pixelcolor::{raw::RawU16, Rgb565}, prelude::{DrawTargetExt, *}, primitives::{Arc, Circle, Ellipse, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, Styled}
+    image::Image, pixelcolor::{raw::RawU16, Rgb565}, prelude::{DrawTargetExt, *}, 
+    primitives::{Arc, Circle, Ellipse, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Polyline, Styled}
 };
 
 use embassy_rp::multicore::{Stack};
@@ -36,6 +37,10 @@ use lcd_async::{
 
 use tinyqoi::Qoi;
 use num_enum::TryFromPrimitive;
+
+// example/src/main.rs
+use closed_svg_path_proc::svg_paths;
+use closed_svg_path::{ClosedCubicBezierPath, BezierSegment};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -170,6 +175,7 @@ static ALL_EYEBGS_RIGHT: [&[u8]; EmotionExpression::MaxCount as usize] = [
     // include_bytes!("../img/eyebg-r-skeptical-11.qoi"),
 ];
 
+svg_paths!("img/simple-heart.svg");
 
 type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
 
@@ -327,13 +333,13 @@ fn draw_one_full_eye(frame_buf: &mut FullFrameBuf, look_correction: f32, pupil_c
 #[embassy_executor::task]
 async fn mode_a_button_task(mut pin: Input<'static>) {
     loop {
-        let mut mode_a_val = MODE_A_VALUE.load(Ordering::Relaxed);
         pin.wait_for_falling_edge().await;
         
         // Introduce a debounce delay
-        Timer::after_millis(10).await; 
+        Timer::after_millis(50).await; 
 
         if pin.is_low() {
+            let mut mode_a_val = MODE_A_VALUE.load(Ordering::Relaxed);
             mode_a_val = (mode_a_val + 1) % MODE_A_COUNT;
             MODE_A_VALUE.store(mode_a_val, Ordering::Relaxed);
         }
@@ -344,13 +350,13 @@ async fn mode_a_button_task(mut pin: Input<'static>) {
 #[embassy_executor::task]
 async fn mode_b_button_task(mut pin: Input<'static>) {
     loop {
-        let mut mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
         pin.wait_for_falling_edge().await;
         
         // Introduce a debounce delay
-        Timer::after_millis(10).await; 
+        Timer::after_millis(50).await; 
 
         if pin.is_low() {
+            let mut mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
             mode_b_val = (mode_b_val + 1) % EmotionExpression::MaxCount as u8;
             MODE_B_VALUE.store(mode_b_val, Ordering::Relaxed);
         }
@@ -656,6 +662,20 @@ where T: embassy_rp::spi::Instance
             eyebg_img = Image::new(&cur_eyebg_qoi, Point::new(0,0));
 
             last_emotion_val = emotion_val;
+
+            if bg_dirty && emotion_val == EmotionExpression::Surprise {
+                if let Some(pathy) = get_path_by_id("heart-path01") {
+                    info!("Have heart-path01!");
+                    for seg in pathy.bezier_segments {
+                        info!("{:?}", seg.0);
+                    }
+                    // info!("Polyline Points:");
+                    // for point in pathy.polyline_approx.points() {
+                    //     info!("{} {}", point.x, point.y);
+                    // }
+                }
+            }
+
         }
 
         if bg_dirty || display_dirty {
