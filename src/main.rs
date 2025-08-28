@@ -157,10 +157,8 @@ static EYE_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::Criti
 
 static ALL_EYEBGS_LEFT: [&[u8]; EmotionExpression::MaxCount as usize] = [
     include_bytes!("../img/eyebg-l-neutral-11.qoi"),
-    // include_bytes!("../img/eye-frame-left-olive.qoi"), // neutral
     // include_bytes!("../img/eyebg-l-happy-11.qoi"),
-    include_bytes!("../img/eye-frame-left.qoi"), //surprise
-    // include_bytes!("../img/eyebg-l-surprise-11.qoi"),
+    include_bytes!("../img/eyebg-l-surprise-11.qoi"),
     // include_bytes!("../img/eyebg-l-sad-11.qoi"),
     // include_bytes!("../img/eyebg-l-curious-11.qoi"),
     // include_bytes!("../img/eyebg-l-skeptical-11.qoi"),
