@@ -20,7 +20,7 @@ use embassy_time::{Delay, Instant, Timer};
 
 use embedded_graphics::{
     image::Image, pixelcolor::{raw::RawU16, Rgb565}, prelude::{DrawTargetExt, *}, 
-    primitives::{Arc, Circle, Ellipse, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Polyline, Styled}
+    primitives::{Arc, Circle, Ellipse, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Polyline, Rectangle, Styled}
 };
 
 use embassy_rp::multicore::{Stack};
@@ -40,7 +40,7 @@ use num_enum::TryFromPrimitive;
 
 // example/src/main.rs
 use closed_svg_path_proc::svg_paths;
-use closed_svg_path::{ClosedCubicBezierPath, BezierSegment};
+use closed_svg_path::{ClosedCubicBezierPath, BezierSegment,StyledClosedCubicBezierPath};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -323,7 +323,16 @@ fn draw_one_full_eye(frame_buf: &mut FullFrameBuf, look_correction: f32, pupil_c
     // draw_asymmetric_inner_eye(&mut raw_fb, is_left , &pupil_ctr, pupil_diam, highlight_diam);
 }
 
+fn draw_custom_bez_path(frame_buf: &mut FullFrameBuf, path: &ClosedCubicBezierPath) {
+    let mut raw_fb =
+        RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
 
+    let stylio = 
+        PrimitiveStyleBuilder::new().fill_color(Rgb565::RED).stroke_color(Rgb565::CYAN).stroke_width(7).build();
+
+    let cheez = StyledClosedCubicBezierPath::new(*path,stylio);
+    let _ = cheez.draw(&mut raw_fb);    
+}
 
 // ---- TASKS defined below ---
 
@@ -452,9 +461,6 @@ async fn main(spawner: Spawner) {
     let mut bg_dirty = true;
 
     let mut loop_count: usize = 0;
-    let mut loop_elapsed_total: u64 = 0;
-    let mut recalc_elapsed_total: u64 = 0;
-
     let mut rnd_src = embassy_rp::clocks::RoscRng;
 
     info!("Config done");
@@ -473,16 +479,12 @@ async fn main(spawner: Spawner) {
 
         let mut brightness_percent = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
 
-        let loop_start_micros = Instant::now().as_micros();
-
         let mut look_step = (loop_count % 3).try_into().unwrap();
         let mut frame_render_gap_millis = INTERFRAME_DELAY_MILLIS;
 
         if old_mode_b_val != mode_b_val {
             info!("old mode_b: {} new: {}", old_mode_b_val, mode_b_val);
             loop_count = 0;
-            loop_elapsed_total = 0;
-            recalc_elapsed_total = 0;
             iris_dirty = true;
             bg_dirty = true;
             old_mode_b_val = mode_b_val;
@@ -528,8 +530,6 @@ async fn main(spawner: Spawner) {
         // TODO we keep mode A and mode B separate for now-- eg Mode B might be inner-eye specific at some point
         if old_mode_a_val != mode_a_val  {
             loop_count = 0;
-            loop_elapsed_total = 0;
-            recalc_elapsed_total = 0;
             iris_dirty = true;
             bg_dirty = true;
             old_mode_a_val = mode_a_val;
@@ -574,26 +574,17 @@ async fn main(spawner: Spawner) {
         eye_ready_pub.publish(loop_count.try_into().unwrap()).await;
    
 
-        let push_start_micros = Instant::now().as_micros();
-        let loop_finished_micros: u64 = Instant::now().as_micros();
         led.set_high();
 
         // give some time to inter-task stuff
         Timer::after_millis(frame_render_gap_millis.try_into().unwrap()).await;
 
+        loop_count += 1;
+
         iris_dirty = false;
         bg_dirty = false;
 
-        loop_count += 1;
-        let loop_elapsed_micros = loop_finished_micros - loop_start_micros;
-        let recalc_frame_micros = loop_finished_micros - push_start_micros;
-        recalc_elapsed_total += recalc_frame_micros;
-        loop_elapsed_total += loop_elapsed_micros;
-        if loop_count % 100 == 0 {
-            let avg_loop_elapsed = loop_elapsed_total / loop_count as u64;
-            let avg_recalc_elapsed = recalc_elapsed_total / loop_count as u64;
-            info!("avg_elapsed micros: {} {}", avg_recalc_elapsed, avg_loop_elapsed);
-        }
+
     }
 }
 
@@ -630,9 +621,14 @@ where T: embassy_rp::spi::Instance
     let mut eye_ready_sub = EYE_READY_CHANNEL.subscriber().unwrap();
     let mut last_emotion_val = EmotionExpression::Neutral11;
 
+    let mut loop_count: usize = 0;
+    let mut loop_elapsed_total: u64 = 0;
+
     loop {
         // sync on eye parameters data ready
         let _eye_ready_msg = eye_ready_sub.next_message_pure().await;
+        let loop_start_micros = Instant::now().as_micros();
+
         let bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
         let iris_dirty = CUR_IRIS_DIRTY.load(Ordering::Relaxed);
         let brightness_percent: u8 = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed).try_into().unwrap();
@@ -658,27 +654,32 @@ where T: embassy_rp::spi::Instance
                 };
 
             eyebg_img = Image::new(&cur_eyebg_qoi, Point::new(0,0));
-
             last_emotion_val = emotion_val;
-
-            if bg_dirty && emotion_val == EmotionExpression::Surprise {
-                if let Some(pathy) = get_path_by_id("heart-path01") {
-                    info!("Have heart-path01!");
-                    for seg in pathy.bezier_segments {
-                        info!("{:?}", seg.0);
-                    }
-                    // info!("Polyline Points:");
-                    // for point in pathy.polyline_approx.points() {
-                    //     info!("{} {}", point.x, point.y);
-                    // }
-                }
-            }
-
         }
 
         if bg_dirty || display_dirty {
             render_one_bg_image(disp_frame_buf, &eyebg_img);
             display_dirty = true;
+        }
+
+        if bg_dirty && emotion_val == EmotionExpression::Surprise {
+            if let Some(pathy) = get_path_by_id("heart-path01") {
+                if is_left { 
+                    info!("Custom path!  x {} y {} w {} h {}",
+                        pathy.bounding_box.top_left.x, 
+                        pathy.bounding_box.top_left.y, 
+                        pathy.bounding_box.size.width,
+                        pathy.bounding_box.size.height);
+                    // for seg in pathy.bezier_segments {
+                    //     info!("{:?}", seg.0);
+                    // }
+                }
+                draw_custom_bez_path(disp_frame_buf, &pathy);
+                // info!("Polyline Points:");
+                // for point in pathy.polyline_approx.points() {
+                //     info!("{} {}", point.x, point.y);
+                // }
+            }
         }
 
         if iris_dirty || display_dirty {
@@ -698,6 +699,14 @@ where T: embassy_rp::spi::Instance
             display_dirty = false;
         }
 
+        loop_count += 1;
+        let loop_finished_micros = Instant::now().as_micros();
+        let loop_elapsed_micros = loop_finished_micros - loop_start_micros;
+        loop_elapsed_total += loop_elapsed_micros;
+        if loop_count % 100 == 0 {
+            let avg_loop_elapsed = loop_elapsed_total / loop_count as u64;
+            info!("avg redraw micros: {}",avg_loop_elapsed);
+        }
     }
 }
 
