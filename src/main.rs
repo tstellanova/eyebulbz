@@ -4,6 +4,7 @@
 use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
+use embedded_graphics::primitives::StrokeAlignment;
 use core::{default::Default};//sync::atomic::{AtomicBool}
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 
@@ -15,7 +16,7 @@ use embassy_rp:: {
 };
 
 
-use embassy_sync::{blocking_mutex::{raw::{CriticalSectionRawMutex, NoopRawMutex}}, mutex::Mutex, pubsub::PubSubChannel};
+use embassy_sync::{blocking_mutex::{raw::{NoopRawMutex}}, mutex::Mutex, pubsub::PubSubChannel};
 use embassy_time::{Delay, Instant, Timer};
 
 use embedded_graphics::{
@@ -40,7 +41,7 @@ use num_enum::TryFromPrimitive;
 
 // example/src/main.rs
 use closed_svg_path_proc::svg_paths;
-use closed_svg_path::{ClosedCubicBezierPath, BezierSegment,StyledClosedCubicBezierPath};
+use closed_svg_path::{ClosedCubicBezierPath, BezierSegment,StyledClosedCubicBezierPath,ClosedPolygon};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -323,15 +324,20 @@ fn draw_one_full_eye(frame_buf: &mut FullFrameBuf, look_correction: f32, pupil_c
     // draw_asymmetric_inner_eye(&mut raw_fb, is_left , &pupil_ctr, pupil_diam, highlight_diam);
 }
 
-fn draw_custom_bez_path(frame_buf: &mut FullFrameBuf, path: &ClosedCubicBezierPath) {
+fn draw_custom_bez_path(frame_buf: &mut FullFrameBuf, path: &ClosedCubicBezierPath, style: &PrimitiveStyle<Rgb565>) {
     let mut raw_fb =
         RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
 
-    let stylio = 
-        PrimitiveStyleBuilder::new().fill_color(Rgb565::RED).stroke_color(Rgb565::CYAN).stroke_width(7).build();
-
-    let cheez = StyledClosedCubicBezierPath::new(*path,stylio);
-    let _ = cheez.draw(&mut raw_fb);    
+    let cubic_redraw_start_micros = Instant::now().as_micros();
+    if let Some(cpoly) = path.closed_poly {
+        let _ = cpoly.into_styled(*style).draw(&mut raw_fb);
+    }
+    else {
+        let _ = path.into_styled(*style).draw(&mut raw_fb);   
+    }
+    let cubic_redraw_elapsed_micros = Instant::now().as_micros() - cubic_redraw_start_micros;
+    info!("cubic redraw micros: {}", cubic_redraw_elapsed_micros);
+ 
 }
 
 // ---- TASKS defined below ---
@@ -624,6 +630,13 @@ where T: embassy_rp::spi::Instance
     let mut loop_count: usize = 0;
     let mut loop_elapsed_total: u64 = 0;
 
+    let heart_style = PrimitiveStyleBuilder::new()
+        .fill_color(Rgb565::RED)
+        .stroke_color(Rgb565::CYAN)
+        .stroke_width(7)
+        .stroke_alignment(StrokeAlignment::Center)
+        .build();
+
     loop {
         // sync on eye parameters data ready
         let _eye_ready_msg = eye_ready_sub.next_message_pure().await;
@@ -670,19 +683,12 @@ where T: embassy_rp::spi::Instance
                         pathy.bounding_box.top_left.y, 
                         pathy.bounding_box.size.width,
                         pathy.bounding_box.size.height);
-                    // for seg in pathy.bezier_segments {
-                    //     info!("{:?}", seg.0);
-                    // }
                 }
-                draw_custom_bez_path(disp_frame_buf, &pathy);
-                // info!("Polyline Points:");
-                // for point in pathy.polyline_approx.points() {
-                //     info!("{} {}", point.x, point.y);
-                // }
+                draw_custom_bez_path(disp_frame_buf, &pathy, &heart_style);
             }
         }
 
-        if iris_dirty || display_dirty {
+        if !is_left && (iris_dirty || display_dirty) { // TODO TMP 
             draw_one_full_eye(disp_frame_buf, look_correction, &pupil_ctr_val, PUPIL_DIAM.try_into().unwrap()
             , IRIS_DIAM.try_into().unwrap(), iris_color, HIGHLIGHT_DIAM as i32);
             display_dirty = true;
