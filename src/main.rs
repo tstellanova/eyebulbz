@@ -5,7 +5,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
 use embedded_graphics::primitives::StrokeAlignment;
-use core::{default::Default};//sync::atomic::{AtomicBool}
+use core::{default::Default};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 
 
@@ -174,7 +174,8 @@ static ALL_EYEBGS_RIGHT: [&[u8]; EmotionExpression::MaxCount as usize] = [
     // include_bytes!("../img/eyebg-r-skeptical-11.qoi"),
 ];
 
-svg_paths!("img/simple-heart.svg");
+svg_paths!("img/eyestack-left.svg");
+// svg_paths!("img/eyestack-right.svg");
 
 type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
 
@@ -182,6 +183,24 @@ type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopR
 // type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_9>;
 type Spi0CsnType = embassy_rp::Peri<'static,peripherals::PIN_17>;
 type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_13> ;
+
+
+fn hex_to_rgb565(hex_color: u32) -> Rgb565 {
+    // Extract 8-bit R, G, B components
+    let r_8bit = ((hex_color >> 16) & 0xFF) as u8;
+    let g_8bit = ((hex_color >> 8) & 0xFF) as u8;
+    let b_8bit = (hex_color & 0xFF) as u8;
+
+    // Convert to 5-bit R, 6-bit G, 5-bit B for Rgb565
+    let r_5bit = r_8bit >> 3; // Take the most significant 5 bits
+    let g_6bit = g_8bit >> 2; // Take the most significant 6 bits
+    let b_5bit = b_8bit >> 3; // Take the most significant 5 bits
+
+    // Combine into a u16 and create Rgb565
+    let rgb565_value = ((r_5bit as u16) << 11) | ((g_6bit as u16) << 5) | (b_5bit as u16);
+
+    Rgb565::from(RawU16::new(rgb565_value))
+}
 
 fn render_one_bg_image<T>(
     frame_buf: &mut FullFrameBuf, 
@@ -326,19 +345,20 @@ fn draw_one_full_eye(frame_buf: &mut FullFrameBuf, look_correction: f32, pupil_c
 
 fn draw_custom_bez_path(frame_buf: &mut FullFrameBuf, path: &ClosedCubicBezierPath, style: &PrimitiveStyle<Rgb565>) {
     let mut raw_fb =
-        RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
+        RawFrameBuf::<Rgb565, &mut [u8]>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
 
-    let cubic_redraw_start_micros = Instant::now().as_micros();
     if let Some(cpoly) = path.closed_poly {
         let _ = cpoly.into_styled(*style).draw(&mut raw_fb);
     }
     else {
         let _ = path.into_styled(*style).draw(&mut raw_fb);   
     }
-    let cubic_redraw_elapsed_micros = Instant::now().as_micros() - cubic_redraw_start_micros;
-    info!("cubic redraw micros: {}", cubic_redraw_elapsed_micros);
- 
 }
+
+
+
+
+
 
 // ---- TASKS defined below ---
 
@@ -391,7 +411,7 @@ async fn main(spawner: Spawner) {
     info!("Main MSP (Core0) = {:#010X}", sp);
 
     // prep for reading mode change events
-    MODE_A_VALUE.store(1, Ordering::Relaxed);
+    MODE_A_VALUE.store(0, Ordering::Relaxed);
     MODE_B_VALUE.store(0, Ordering::Relaxed);
 
     let mut led = Output::new(p.PIN_25, Level::High);
@@ -503,6 +523,8 @@ async fn main(spawner: Spawner) {
             match mode_a_val {
                 0 => { 
                     look_step = 0;
+                    brightness_percent = 100;
+                    brightness_ascending = false;
                     frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 16;
                     Rgb565::CSS_MAGENTA 
                 },
@@ -630,13 +652,6 @@ where T: embassy_rp::spi::Instance
     let mut loop_count: usize = 0;
     let mut loop_elapsed_total: u64 = 0;
 
-    let heart_style = PrimitiveStyleBuilder::new()
-        .fill_color(Rgb565::RED)
-        .stroke_color(Rgb565::CYAN)
-        .stroke_width(7)
-        .stroke_alignment(StrokeAlignment::Center)
-        .build();
-
     loop {
         // sync on eye parameters data ready
         let _eye_ready_msg = eye_ready_sub.next_message_pure().await;
@@ -675,23 +690,23 @@ where T: embassy_rp::spi::Instance
             display_dirty = true;
         }
 
-        if bg_dirty && emotion_val == EmotionExpression::Surprise {
-            if let Some(pathy) = get_path_by_id("heart-path01") {
-                if is_left { 
-                    info!("Custom path!  x {} y {} w {} h {}",
-                        pathy.bounding_box.top_left.x, 
-                        pathy.bounding_box.top_left.y, 
-                        pathy.bounding_box.size.width,
-                        pathy.bounding_box.size.height);
-                }
-                draw_custom_bez_path(disp_frame_buf, &pathy, &heart_style);
-            }
+        if is_left && bg_dirty && emotion_val == EmotionExpression::Surprise {
+            // TODO draw in back-to-front order
+            draw_background_shapes(disp_frame_buf);
         }
 
-        if !is_left && (iris_dirty || display_dirty) { // TODO TMP 
-            draw_one_full_eye(disp_frame_buf, look_correction, &pupil_ctr_val, PUPIL_DIAM.try_into().unwrap()
-            , IRIS_DIAM.try_into().unwrap(), iris_color, HIGHLIGHT_DIAM as i32);
-            display_dirty = true;
+        if is_left && (iris_dirty || display_dirty) && emotion_val == EmotionExpression::Surprise {
+                draw_inner_eye_shapes(disp_frame_buf);
+                display_dirty = true;
+        }
+        else if !is_left && (iris_dirty || display_dirty) { 
+                draw_one_full_eye(disp_frame_buf, look_correction, &pupil_ctr_val, PUPIL_DIAM.try_into().unwrap()
+                , IRIS_DIAM.try_into().unwrap(), iris_color, HIGHLIGHT_DIAM as i32);
+                display_dirty = true;
+        }
+
+        if is_left && iris_dirty && emotion_val == EmotionExpression::Surprise {
+            draw_eyeball_overlay_shapes(disp_frame_buf);
         }
 
         if display_dirty {
@@ -709,13 +724,122 @@ where T: embassy_rp::spi::Instance
         let loop_finished_micros = Instant::now().as_micros();
         let loop_elapsed_micros = loop_finished_micros - loop_start_micros;
         loop_elapsed_total += loop_elapsed_micros;
-        if loop_count % 100 == 0 {
+        if loop_count % 1000 == 0 {
             let avg_loop_elapsed = loop_elapsed_total / loop_count as u64;
             info!("avg redraw micros: {}",avg_loop_elapsed);
         }
     }
 }
 
+
+fn draw_background_shapes(frame_buf: &mut FullFrameBuf) {
+    let start_micros = Instant::now().as_micros();
+
+    let upper_lid_top_style = PrimitiveStyleBuilder::new()
+        .fill_color(Rgb565::CSS_OLIVE_DRAB)
+        .stroke_color(Rgb565::CSS_BLACK)
+        .stroke_width(1)
+        .stroke_alignment(StrokeAlignment::Center)
+        .build();
+    let brow_style = PrimitiveStyleBuilder::new()
+        .fill_color(Rgb565::BLACK)
+        .stroke_color(Rgb565::BLACK)
+        .stroke_width(1)
+        .stroke_alignment(StrokeAlignment::Center)
+        .build();
+
+    if let Some(upper_lid_top_path) = get_path_by_id("upper_lid_top") {
+        draw_custom_bez_path(frame_buf, &upper_lid_top_path, &upper_lid_top_style);
+    }
+    if let Some(eyebrow_path) = get_path_by_id("eyebrow") {
+        draw_custom_bez_path(frame_buf, &eyebrow_path, &brow_style);
+    }
+
+    let elapsed_micros = Instant::now().as_micros() - start_micros;
+    info!("bg redraw micros: {}", elapsed_micros);
+}
+
+
+fn draw_inner_eye_shapes(frame_buf: &mut FullFrameBuf) {
+    let start_micros = Instant::now().as_micros();
+
+    let sclera_style = PrimitiveStyleBuilder::new()
+        .fill_color(hex_to_rgb565(0xf4eed7))
+        .stroke_color(Rgb565::BLACK)
+        .stroke_width(1)
+        .stroke_alignment(StrokeAlignment::Center)
+        .build();
+
+    let iris_style = PrimitiveStyleBuilder::new()
+        .fill_color(hex_to_rgb565(0x2affd5))
+        .stroke_color(Rgb565::CSS_BLACK)
+        .stroke_width(4)
+        .stroke_alignment(StrokeAlignment::Center)
+        .build();
+
+
+    if let Some(sclera_path) = get_path_by_id("sclera") {
+        draw_custom_bez_path(frame_buf, &sclera_path, &sclera_style);
+    }
+    if let Some(iris_path) = get_path_by_id("iris") {
+        draw_custom_bez_path(frame_buf, &iris_path, &iris_style);
+    }
+    if let Some(iris_shadow_top_path) = get_path_by_id("iris_shadow_top") {
+        draw_custom_bez_path(frame_buf, &iris_shadow_top_path, &&PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
+    }
+    if let Some(pupil_path) = get_path_by_id("pupil") {
+        draw_custom_bez_path(frame_buf, &pupil_path, &PrimitiveStyle::with_fill(Rgb565::BLACK));
+    }
+    if let Some(glint_lg_path) = get_path_by_id("glint_lg") {
+        draw_custom_bez_path(frame_buf, &glint_lg_path, &PrimitiveStyle::with_fill(Rgb565::WHITE));
+    }
+    if let Some(glint_sm_path) = get_path_by_id("glint_sm") {
+        draw_custom_bez_path(frame_buf, &glint_sm_path, &PrimitiveStyle::with_fill(Rgb565::WHITE));
+    }
+    let elapsed_micros = Instant::now().as_micros() - start_micros;
+    info!("inner redraw micros: {}", elapsed_micros);
+}
+/**
+ * Draw shapes that overlay the eyeball (sclera and all) after drawing the iris etc
+ */
+fn draw_eyeball_overlay_shapes(frame_buf: &mut FullFrameBuf) {
+    let start_micros = Instant::now().as_micros();
+
+    //TODO get the style info from the SVG file itself at build time?
+
+    let upper_lid_style = PrimitiveStyleBuilder::new()
+        .fill_color(hex_to_rgb565(0x73369a)) 
+        .stroke_color(Rgb565::CSS_BLACK)
+        .stroke_width(1)
+        .stroke_alignment(StrokeAlignment::Center)
+        .build();
+
+    let upper_lid_shadow_style = PrimitiveStyleBuilder::new()
+        .fill_color(hex_to_rgb565(0x1d1c4f))
+        // .stroke_color(Rgb565::CSS_GRAY)
+        // .stroke_width(1)
+        // .stroke_alignment(StrokeAlignment::Center)
+        .build();
+
+    let lower_lid_style = PrimitiveStyleBuilder::new()
+        .fill_color(Rgb565::CSS_OLIVE_DRAB)
+        .stroke_color(Rgb565::CSS_BLACK)
+        .stroke_width(1)
+        .stroke_alignment(StrokeAlignment::Center)
+        .build();
+
+    if let Some(lower_lid_path) = get_path_by_id("lower_lid") {
+        draw_custom_bez_path(frame_buf, &lower_lid_path, &lower_lid_style);
+    }
+    if let Some(upper_lid_shadow_path) = get_path_by_id("upper_lid_shadow") {
+        draw_custom_bez_path(frame_buf, &upper_lid_shadow_path, &upper_lid_shadow_style);
+    }
+    if let Some(upper_lid_path) = get_path_by_id("upper_lid") {
+        draw_custom_bez_path(frame_buf, &upper_lid_path, &upper_lid_style);
+    }
+    let elapsed_micros = Instant::now().as_micros() - start_micros;
+    info!("overlay redraw micros: {}", elapsed_micros);
+}
 
 #[embassy_executor::task]
 async fn core0_drawing_task(
