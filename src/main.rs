@@ -77,14 +77,14 @@ const IRIS_DIAM: u16 = 120;
 const PUPIL_DIAM: u16 = IRIS_DIAM/2;
 const HIGHLIGHT_DIAM: u16 = PUPIL_DIAM/2;
 
-const INNER_EYE_DIM: u16 = IRIS_DIAM + 4;
-const FARPOINT_CENTER: Point = Point::new(160, 240);
-const EYELASH_DIAMETER: u32 = 310u32;
+// const INNER_EYE_DIM: u16 = IRIS_DIAM + 4;
+// const FARPOINT_CENTER: Point = Point::new(160, 240);
+// const EYELASH_DIAMETER: u32 = 310u32;
 
-const DISPLAY_HALF_WIDTH: i32 = (DISPLAY_WIDTH/2) as i32;
-const PUPIL_H_OFFSET: i32 = (DISPLAY_WIDTH / 12) as i32;
-const DISPLAY_HALF_HEIGHT: i32 = (DISPLAY_HEIGHT/2) as i32;
-const PUPIL_V_OFFSET: i32 = (DISPLAY_HEIGHT/8) as i32 ;
+// const DISPLAY_HALF_WIDTH: i32 = (DISPLAY_WIDTH/2) as i32;
+// const PUPIL_H_OFFSET: i32 = (DISPLAY_WIDTH / 12) as i32;
+// const DISPLAY_HALF_HEIGHT: i32 = (DISPLAY_HEIGHT/2) as i32;
+// const PUPIL_V_OFFSET: i32 = (DISPLAY_HEIGHT/8) as i32 ;
 
 const LEFT_PUPIL_CTR: Point = Point::new((DISPLAY_WIDTH-148) as i32,159) ; //- Size::new(0, DISPLAY_HEIGHT as u32 / 2);
 const RIGHT_PUPIL_CTR: Point = Point::new(148,159); //  - Size::new(0, DISPLAY_HEIGHT as u32 / 2);
@@ -220,15 +220,15 @@ fn render_one_bg_image<T>(
 
 }
 
-fn build_styled_arc(center: Point, diam: u32, start_deg: f32, sweep_deg: f32, color: Rgb565, stroke_width: u32) -> Styled<Arc, PrimitiveStyle<Rgb565>> {
-    Styled::new(
-        Arc::with_center(center, 
-            diam, 
-            Angle::from_degrees(start_deg), 
-        Angle::from_degrees(sweep_deg)),
-        PrimitiveStyle::with_stroke(color, stroke_width),
-    )
-}
+// fn build_styled_arc(center: Point, diam: u32, start_deg: f32, sweep_deg: f32, color: Rgb565, stroke_width: u32) -> Styled<Arc, PrimitiveStyle<Rgb565>> {
+//     Styled::new(
+//         Arc::with_center(center, 
+//             diam, 
+//             Angle::from_degrees(start_deg), 
+//         Angle::from_degrees(sweep_deg)),
+//         PrimitiveStyle::with_stroke(color, stroke_width),
+//     )
+// }
 
 
 fn draw_elliptic_inner_eye<T>(
@@ -506,7 +506,7 @@ async fn main(spawner: Spawner) {
         let mut brightness_percent = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
 
         let mut look_step = (loop_count % 3).try_into().unwrap();
-        let mut frame_render_gap_millis = INTERFRAME_DELAY_MILLIS;
+        let frame_render_gap_millis;
 
         if old_mode_b_val != mode_b_val {
             info!("old mode_b: {} new: {}", old_mode_b_val, mode_b_val);
