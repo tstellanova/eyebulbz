@@ -40,7 +40,7 @@ use tinyqoi::Qoi;
 use num_enum::TryFromPrimitive;
 
 // example/src/main.rs
-use closed_svg_path_proc::svg_paths;
+use closed_svg_path_proc::import_svg_paths;
 use closed_svg_path::{ClosedCubicBezierPath, BezierSegment,StyledClosedCubicBezierPath,ClosedPolygon};
 
 use {defmt_rtt as _, panic_probe as _};
@@ -174,8 +174,9 @@ static ALL_EYEBGS_RIGHT: [&[u8]; EmotionExpression::MaxCount as usize] = [
     // include_bytes!("../img/eyebg-r-skeptical-11.qoi"),
 ];
 
-svg_paths!("img/eyestack-left.svg");
-// svg_paths!("img/eyestack-right.svg");
+import_svg_paths!("img/eyestack-left.svg");
+// import_svg_paths!("img/eyestack-right.svg");
+
 
 type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
 
@@ -183,6 +184,15 @@ type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopR
 // type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_9>;
 type Spi0CsnType = embassy_rp::Peri<'static,peripherals::PIN_17>;
 type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_13> ;
+
+
+fn get_svg_path_by_id_safe(key: &str) -> Option<ClosedCubicBezierPath> {
+    let check = get_svg_path_by_id(key);
+    if check.is_none() {
+        warn!("No path for key: {}", key);
+    }
+    check
+}
 
 
 fn hex_to_rgb565(hex_color: u32) -> Rgb565 {
@@ -742,22 +752,23 @@ fn draw_background_shapes(frame_buf: &mut FullFrameBuf) {
         .stroke_alignment(StrokeAlignment::Center)
         .build();
     let brow_style = PrimitiveStyleBuilder::new()
-        .fill_color(Rgb565::BLACK)
+        .fill_color( Rgb565::CSS_BLACK )
         .stroke_color(Rgb565::BLACK)
         .stroke_width(1)
         .stroke_alignment(StrokeAlignment::Center)
         .build();
 
-    if let Some(upper_lid_top_path) = get_path_by_id("upper_lid_top") {
+    if let Some(upper_lid_top_path) = get_svg_path_by_id_safe("upper_lid_top_10") {
         draw_custom_bez_path(frame_buf, &upper_lid_top_path, &upper_lid_top_style);
     }
-    if let Some(eyebrow_path) = get_path_by_id("eyebrow") {
+    if let Some(eyebrow_path) = get_svg_path_by_id_safe("eyebrow_10") {
         draw_custom_bez_path(frame_buf, &eyebrow_path, &brow_style);
     }
 
     let elapsed_micros = Instant::now().as_micros() - start_micros;
     info!("bg redraw micros: {}", elapsed_micros);
 }
+
 
 
 fn draw_inner_eye_shapes(frame_buf: &mut FullFrameBuf) {
@@ -777,28 +788,28 @@ fn draw_inner_eye_shapes(frame_buf: &mut FullFrameBuf) {
         .stroke_alignment(StrokeAlignment::Center)
         .build();
 
-
-    if let Some(sclera_path) = get_path_by_id("sclera") {
+    if let Some(sclera_path) = get_svg_path_by_id_safe("sclera_10") {
         draw_custom_bez_path(frame_buf, &sclera_path, &sclera_style);
     }
-    if let Some(iris_path) = get_path_by_id("iris") {
+    if let Some(iris_path) = get_svg_path_by_id_safe("iris_10") {
         draw_custom_bez_path(frame_buf, &iris_path, &iris_style);
     }
-    if let Some(iris_shadow_top_path) = get_path_by_id("iris_shadow_top") {
+    if let Some(iris_shadow_top_path) = get_svg_path_by_id_safe("iris_shadow_top_10") {
         draw_custom_bez_path(frame_buf, &iris_shadow_top_path, &&PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
     }
-    if let Some(pupil_path) = get_path_by_id("pupil") {
+    if let Some(pupil_path) = get_svg_path_by_id_safe("pupil_10") {
         draw_custom_bez_path(frame_buf, &pupil_path, &PrimitiveStyle::with_fill(Rgb565::BLACK));
     }
-    if let Some(glint_lg_path) = get_path_by_id("glint_lg") {
+    if let Some(glint_lg_path) = get_svg_path_by_id_safe("glint_lg_10") {
         draw_custom_bez_path(frame_buf, &glint_lg_path, &PrimitiveStyle::with_fill(Rgb565::WHITE));
     }
-    if let Some(glint_sm_path) = get_path_by_id("glint_sm") {
+    if let Some(glint_sm_path) = get_svg_path_by_id_safe("glint_sm_10") {
         draw_custom_bez_path(frame_buf, &glint_sm_path, &PrimitiveStyle::with_fill(Rgb565::WHITE));
     }
     let elapsed_micros = Instant::now().as_micros() - start_micros;
     info!("inner redraw micros: {}", elapsed_micros);
 }
+
 /**
  * Draw shapes that overlay the eyeball (sclera and all) after drawing the iris etc
  */
@@ -828,13 +839,13 @@ fn draw_eyeball_overlay_shapes(frame_buf: &mut FullFrameBuf) {
         .stroke_alignment(StrokeAlignment::Center)
         .build();
 
-    if let Some(lower_lid_path) = get_path_by_id("lower_lid") {
+    if let Some(lower_lid_path) = get_svg_path_by_id_safe("lower_lid_10") {
         draw_custom_bez_path(frame_buf, &lower_lid_path, &lower_lid_style);
     }
-    if let Some(upper_lid_shadow_path) = get_path_by_id("upper_lid_shadow") {
+    if let Some(upper_lid_shadow_path) = get_svg_path_by_id_safe("upper_lid_shadow_10") {
         draw_custom_bez_path(frame_buf, &upper_lid_shadow_path, &upper_lid_shadow_style);
     }
-    if let Some(upper_lid_path) = get_path_by_id("upper_lid") {
+    if let Some(upper_lid_path) = get_svg_path_by_id_safe("upper_lid_10") {
         draw_custom_bez_path(frame_buf, &upper_lid_path, &upper_lid_style);
     }
     let elapsed_micros = Instant::now().as_micros() - start_micros;
