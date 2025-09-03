@@ -174,8 +174,11 @@ static ALL_EYEBGS_RIGHT: [&[u8]; EmotionExpression::MaxCount as usize] = [
     // include_bytes!("../img/eyebg-r-skeptical-11.qoi"),
 ];
 
-import_svg_paths!("img/eyestack-left.svg");
-// import_svg_paths!("img/eyestack-right.svg");
+const FILE_ID_EYE_LEFT: u32 = 0;
+const FILE_ID_EYE_RIGHT: u32 = 1;
+
+import_svg_paths!(FILE_ID_EYE_LEFT, "img/eyestack-left.svg");
+import_svg_paths!(FILE_ID_EYE_RIGHT, "img/eyestack-right.svg");
 
 
 type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
@@ -186,10 +189,20 @@ type Spi0CsnType = embassy_rp::Peri<'static,peripherals::PIN_17>;
 type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_13> ;
 
 
-fn get_svg_path_by_id_safe(key: &str) -> Option<ClosedCubicBezierPath> {
-    let check = get_svg_path_by_id(key);
+
+
+fn get_svg_path_by_id(file_id: u32, path_id: &str) -> Option<ClosedCubicBezierPath> {
+    match file_id {
+        FILE_ID_EYE_LEFT => get_svg_path_by_id_file_FILE_ID_EYE_LEFT(path_id),
+        FILE_ID_EYE_RIGHT => get_svg_path_by_id_file_FILE_ID_EYE_RIGHT(path_id),
+        _ => None,
+    }
+}
+
+fn get_svg_path_by_id_checked(file_id: u32, path_id: &str) -> Option<ClosedCubicBezierPath> {
+    let check = get_svg_path_by_id(file_id, path_id);
     if check.is_none() {
-        warn!("No path for key: {}", key);
+        warn!("No path for file_id {} path_id {}", file_id, path_id);
     }
     check
 }
@@ -504,29 +517,19 @@ async fn main(spawner: Spawner) {
     let mut brightness_ascending: bool = true;
     let mut old_mode_a_val  = 255;
     let mut old_mode_b_val  = 255;
+    let mut emotion_val:u8 = EmotionExpression::Neutral11 as u8;
 
     let eye_ready_pub = EYE_READY_CHANNEL.publisher().unwrap();
 
     // Main drawing loop, runs forever
     loop {
-        led.set_low();
+        led.set_high();
         let mode_a_val = MODE_A_VALUE.load(Ordering::Relaxed);
         let mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
-
         let mut brightness_percent = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
 
         let mut look_step = (loop_count % 3).try_into().unwrap();
         let frame_render_gap_millis;
-
-        if old_mode_b_val != mode_b_val {
-            info!("old mode_b: {} new: {}", old_mode_b_val, mode_b_val);
-            loop_count = 0;
-            iris_dirty = true;
-            bg_dirty = true;
-            old_mode_b_val = mode_b_val;
-            // TODO for development, emotion is locked to Mode B state
-            CUR_EMOTION.store(mode_b_val, Ordering::Relaxed);
-        }
 
 
         let iris_color: Rgb565 =
@@ -539,6 +542,13 @@ async fn main(spawner: Spawner) {
                     Rgb565::CSS_MAGENTA 
                 },
                 1 => { 
+                    // flip back and forth
+                    if emotion_val == EmotionExpression::Neutral11 as u8 {
+                        emotion_val = EmotionExpression::Surprise as u8;
+                    }
+                    else if emotion_val == EmotionExpression::Surprise as u8 {
+                        emotion_val = EmotionExpression::Neutral11 as u8;
+                    }
                     frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 8;
                     iris_dirty = true;
                     Rgb565::CSS_RED 
@@ -565,12 +575,24 @@ async fn main(spawner: Spawner) {
                 }
         };
     
-        // TODO we keep mode A and mode B separate for now-- eg Mode B might be inner-eye specific at some point
         if old_mode_a_val != mode_a_val  {
+            info!("old mode_a: {} new: {}", old_mode_a_val, mode_a_val);
             loop_count = 0;
             iris_dirty = true;
             bg_dirty = true;
             old_mode_a_val = mode_a_val;
+        }
+
+        if old_mode_b_val != mode_b_val {
+            info!("old mode_b: {} new: {}", old_mode_b_val, mode_b_val);
+            loop_count = 0;
+            iris_dirty = true;
+            bg_dirty = true;
+            old_mode_b_val = mode_b_val;
+            if mode_a_val != 1 {
+                // switch emotions
+                emotion_val = mode_b_val;
+            }
         }
 
         // 5000/480 = steps per ten seconds
@@ -600,6 +622,8 @@ async fn main(spawner: Spawner) {
         }
 
         // ship all the redraw config values
+        // info!("emotion_val: {}", emotion_val);
+        CUR_EMOTION.store(emotion_val, Ordering::Relaxed);
         CUR_LOOK_STEP.store(look_step, Ordering::Relaxed);
         CUR_IRIS_COLOR.store(iris_color.into_storage(), Ordering::Relaxed);
         CUR_IRIS_DIRTY.store(iris_dirty, Ordering::Relaxed);
@@ -612,7 +636,7 @@ async fn main(spawner: Spawner) {
         eye_ready_pub.publish(loop_count.try_into().unwrap()).await;
    
 
-        led.set_high();
+        led.set_low();
 
         // give some time to inter-task stuff
         Timer::after_millis(frame_render_gap_millis.try_into().unwrap()).await;
@@ -700,23 +724,15 @@ where T: embassy_rp::spi::Instance
             display_dirty = true;
         }
 
-        if is_left && bg_dirty && emotion_val == EmotionExpression::Surprise {
+        if bg_dirty  {
             // TODO draw in back-to-front order
-            draw_background_shapes(disp_frame_buf);
+            draw_background_shapes(is_left, emotion_val, disp_frame_buf);
         }
 
-        if is_left && (iris_dirty || display_dirty) && emotion_val == EmotionExpression::Surprise {
-                draw_inner_eye_shapes(disp_frame_buf);
+        if iris_dirty || display_dirty  {
+                draw_inner_eye_shapes(is_left, emotion_val, disp_frame_buf);
+                draw_eyeball_overlay_shapes(is_left, emotion_val, disp_frame_buf);
                 display_dirty = true;
-        }
-        else if !is_left && (iris_dirty || display_dirty) { 
-                draw_one_full_eye(disp_frame_buf, look_correction, &pupil_ctr_val, PUPIL_DIAM.try_into().unwrap()
-                , IRIS_DIAM.try_into().unwrap(), iris_color, HIGHLIGHT_DIAM as i32);
-                display_dirty = true;
-        }
-
-        if is_left && iris_dirty && emotion_val == EmotionExpression::Surprise {
-            draw_eyeball_overlay_shapes(disp_frame_buf);
         }
 
         if display_dirty {
@@ -742,8 +758,10 @@ where T: embassy_rp::spi::Instance
 }
 
 
-fn draw_background_shapes(frame_buf: &mut FullFrameBuf) {
+fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, frame_buf: &mut FullFrameBuf) {
     let start_micros = Instant::now().as_micros();
+
+    let file_id: u32 = if is_left { FILE_ID_EYE_LEFT } else { FILE_ID_EYE_RIGHT };
 
     let upper_lid_top_style = PrimitiveStyleBuilder::new()
         .fill_color(Rgb565::CSS_OLIVE_DRAB)
@@ -758,21 +776,32 @@ fn draw_background_shapes(frame_buf: &mut FullFrameBuf) {
         .stroke_alignment(StrokeAlignment::Center)
         .build();
 
-    if let Some(upper_lid_top_path) = get_svg_path_by_id_safe("upper_lid_top_10") {
-        draw_custom_bez_path(frame_buf, &upper_lid_top_path, &upper_lid_top_style);
+    if emotion == EmotionExpression::Surprise {
+        if let Some(upper_lid_top_path) = get_svg_path_by_id_checked(file_id,"upper_lid_top_10") {
+            draw_custom_bez_path(frame_buf, &upper_lid_top_path, &upper_lid_top_style);
+        }
+        if let Some(eyebrow_path) = get_svg_path_by_id_checked(file_id,"eyebrow_10") {
+            draw_custom_bez_path(frame_buf, &eyebrow_path, &brow_style);
+        }
     }
-    if let Some(eyebrow_path) = get_svg_path_by_id_safe("eyebrow_10") {
-        draw_custom_bez_path(frame_buf, &eyebrow_path, &brow_style);
+    else {
+        if let Some(upper_lid_top_path) = get_svg_path_by_id_checked(file_id,"upper_lid_top_11") {
+            draw_custom_bez_path(frame_buf, &upper_lid_top_path, &upper_lid_top_style);
+        }
+        if let Some(eyebrow_path) = get_svg_path_by_id_checked(file_id,"eyebrow_11") {
+            draw_custom_bez_path(frame_buf, &eyebrow_path, &brow_style);
+        }
     }
 
     let elapsed_micros = Instant::now().as_micros() - start_micros;
-    info!("bg redraw micros: {}", elapsed_micros);
+    // info!("bg redraw micros: {}", elapsed_micros);
 }
 
 
 
-fn draw_inner_eye_shapes(frame_buf: &mut FullFrameBuf) {
+fn draw_inner_eye_shapes(is_left:bool, emotion: EmotionExpression, frame_buf: &mut FullFrameBuf) {
     let start_micros = Instant::now().as_micros();
+    let file_id: u32 = if is_left { FILE_ID_EYE_LEFT } else { FILE_ID_EYE_RIGHT };
 
     let sclera_style = PrimitiveStyleBuilder::new()
         .fill_color(hex_to_rgb565(0xf4eed7))
@@ -788,33 +817,57 @@ fn draw_inner_eye_shapes(frame_buf: &mut FullFrameBuf) {
         .stroke_alignment(StrokeAlignment::Center)
         .build();
 
-    if let Some(sclera_path) = get_svg_path_by_id_safe("sclera_10") {
-        draw_custom_bez_path(frame_buf, &sclera_path, &sclera_style);
+    if emotion == EmotionExpression::Surprise {
+        if let Some(sclera_path) = get_svg_path_by_id_checked(file_id,"sclera_10") {
+            draw_custom_bez_path(frame_buf, &sclera_path, &sclera_style);
+        }
+        if let Some(iris_path) = get_svg_path_by_id_checked(file_id,"iris_10") {
+            draw_custom_bez_path(frame_buf, &iris_path, &iris_style);
+        }
+        if let Some(iris_shadow_top_path) = get_svg_path_by_id_checked(file_id,"iris_shadow_top_10") {
+            draw_custom_bez_path(frame_buf, &iris_shadow_top_path, &&PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
+        }
+        if let Some(pupil_path) = get_svg_path_by_id_checked(file_id,"pupil_10") {
+            draw_custom_bez_path(frame_buf, &pupil_path, &PrimitiveStyle::with_fill(Rgb565::BLACK));
+        }
+        if let Some(glint_lg_path) = get_svg_path_by_id_checked(file_id,"glint_lg_10") {
+            draw_custom_bez_path(frame_buf, &glint_lg_path, &PrimitiveStyle::with_fill(Rgb565::WHITE));
+        }
+        if let Some(glint_sm_path) = get_svg_path_by_id_checked(file_id,"glint_sm_10") {
+            draw_custom_bez_path(frame_buf, &glint_sm_path, &PrimitiveStyle::with_fill(Rgb565::WHITE));
+        }
     }
-    if let Some(iris_path) = get_svg_path_by_id_safe("iris_10") {
-        draw_custom_bez_path(frame_buf, &iris_path, &iris_style);
-    }
-    if let Some(iris_shadow_top_path) = get_svg_path_by_id_safe("iris_shadow_top_10") {
-        draw_custom_bez_path(frame_buf, &iris_shadow_top_path, &&PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
-    }
-    if let Some(pupil_path) = get_svg_path_by_id_safe("pupil_10") {
-        draw_custom_bez_path(frame_buf, &pupil_path, &PrimitiveStyle::with_fill(Rgb565::BLACK));
-    }
-    if let Some(glint_lg_path) = get_svg_path_by_id_safe("glint_lg_10") {
-        draw_custom_bez_path(frame_buf, &glint_lg_path, &PrimitiveStyle::with_fill(Rgb565::WHITE));
-    }
-    if let Some(glint_sm_path) = get_svg_path_by_id_safe("glint_sm_10") {
-        draw_custom_bez_path(frame_buf, &glint_sm_path, &PrimitiveStyle::with_fill(Rgb565::WHITE));
+    else {
+        if let Some(sclera_path) = get_svg_path_by_id_checked(file_id,"sclera_11") {
+            draw_custom_bez_path(frame_buf, &sclera_path, &sclera_style);
+        }
+        if let Some(iris_path) = get_svg_path_by_id_checked(file_id,"iris_11") {
+            draw_custom_bez_path(frame_buf, &iris_path, &iris_style);
+        }
+        if let Some(iris_shadow_top_path) = get_svg_path_by_id_checked(file_id,"iris_shadow_top_11") {
+            draw_custom_bez_path(frame_buf, &iris_shadow_top_path, &&PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
+        }
+        if let Some(pupil_path) = get_svg_path_by_id_checked(file_id,"pupil_11") {
+            draw_custom_bez_path(frame_buf, &pupil_path, &PrimitiveStyle::with_fill(Rgb565::BLACK));
+        }
+        if let Some(glint_lg_path) = get_svg_path_by_id_checked(file_id,"glint_lg_11") {
+            draw_custom_bez_path(frame_buf, &glint_lg_path, &PrimitiveStyle::with_fill(Rgb565::WHITE));
+        }
+        if let Some(glint_sm_path) = get_svg_path_by_id_checked(file_id,"glint_sm_11") {
+            draw_custom_bez_path(frame_buf, &glint_sm_path, &PrimitiveStyle::with_fill(Rgb565::WHITE));
+        }
     }
     let elapsed_micros = Instant::now().as_micros() - start_micros;
-    info!("inner redraw micros: {}", elapsed_micros);
+    // info!("inner redraw micros: {}", elapsed_micros);
 }
 
 /**
  * Draw shapes that overlay the eyeball (sclera and all) after drawing the iris etc
  */
-fn draw_eyeball_overlay_shapes(frame_buf: &mut FullFrameBuf) {
+fn draw_eyeball_overlay_shapes(is_left:bool, emotion:EmotionExpression, frame_buf: &mut FullFrameBuf) {
     let start_micros = Instant::now().as_micros();
+
+    let file_id: u32 = if is_left { FILE_ID_EYE_LEFT } else { FILE_ID_EYE_RIGHT };
 
     //TODO get the style info from the SVG file itself at build time?
 
@@ -839,17 +892,30 @@ fn draw_eyeball_overlay_shapes(frame_buf: &mut FullFrameBuf) {
         .stroke_alignment(StrokeAlignment::Center)
         .build();
 
-    if let Some(lower_lid_path) = get_svg_path_by_id_safe("lower_lid_10") {
-        draw_custom_bez_path(frame_buf, &lower_lid_path, &lower_lid_style);
+    if emotion == EmotionExpression::Surprise {
+        if let Some(lower_lid_path) = get_svg_path_by_id_checked(file_id,"lower_lid_10") {
+            draw_custom_bez_path(frame_buf, &lower_lid_path, &lower_lid_style);
+        }
+        if let Some(upper_lid_shadow_path) = get_svg_path_by_id_checked(file_id,"upper_lid_shadow_10") {
+            draw_custom_bez_path(frame_buf, &upper_lid_shadow_path, &upper_lid_shadow_style);
+        }
+        if let Some(upper_lid_path) = get_svg_path_by_id_checked(file_id,"upper_lid_10") {
+            draw_custom_bez_path(frame_buf, &upper_lid_path, &upper_lid_style);
+        }
     }
-    if let Some(upper_lid_shadow_path) = get_svg_path_by_id_safe("upper_lid_shadow_10") {
-        draw_custom_bez_path(frame_buf, &upper_lid_shadow_path, &upper_lid_shadow_style);
-    }
-    if let Some(upper_lid_path) = get_svg_path_by_id_safe("upper_lid_10") {
-        draw_custom_bez_path(frame_buf, &upper_lid_path, &upper_lid_style);
+    else {
+        if let Some(lower_lid_path) = get_svg_path_by_id_checked(file_id,"lower_lid_11") {
+            draw_custom_bez_path(frame_buf, &lower_lid_path, &lower_lid_style);
+        }
+        if let Some(upper_lid_shadow_path) = get_svg_path_by_id_checked(file_id,"upper_lid_shadow_11") {
+            draw_custom_bez_path(frame_buf, &upper_lid_shadow_path, &upper_lid_shadow_style);
+        }
+        if let Some(upper_lid_path) = get_svg_path_by_id_checked(file_id,"upper_lid_11") {
+            draw_custom_bez_path(frame_buf, &upper_lid_path, &upper_lid_style);
+        }
     }
     let elapsed_micros = Instant::now().as_micros() - start_micros;
-    info!("overlay redraw micros: {}", elapsed_micros);
+    // info!("overlay redraw micros: {}", elapsed_micros);
 }
 
 #[embassy_executor::task]
