@@ -21,8 +21,9 @@ use embassy_sync::{blocking_mutex::{raw::{NoopRawMutex}}, mutex::Mutex, pubsub::
 use embassy_time::{Delay, Instant, Timer};
 
 use embedded_graphics::{
-    image::Image, pixelcolor::{raw::RawU16, Rgb565}, prelude::{DrawTargetExt, *}, 
-    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Polyline, Rectangle}
+    prelude::*,
+    pixelcolor::{raw::RawU16, Rgb565}, 
+    primitives::{PrimitiveStyle, PrimitiveStyleBuilder}
 };
 
 use embassy_rp::multicore::{Stack};
@@ -37,12 +38,12 @@ use lcd_async::{
     Builder,
 };
 
-use tinyqoi::Qoi;
+// use tinyqoi::Qoi;
 use num_enum::TryFromPrimitive;
 
 // example/src/main.rs
 use closed_svg_path_proc::import_svg_paths;
-use closed_svg_path::{ClosedCubicBezierPath, BezierSegment, ClosedPolygon};
+use closed_svg_path::ClosedPolygon;
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -122,8 +123,6 @@ const IRIS_PALETTE_PURPLE: [Rgb565; 8] = [
     Rgb565::CSS_PLUM,
 
 ];
-const IRIS_PALETTE_SPECTRUM: [Rgb565; 6] = [ Rgb565::CSS_BLUE_VIOLET, Rgb565::CSS_DARK_MAGENTA,  Rgb565::CSS_MEDIUM_VIOLET_RED, Rgb565::CSS_PALE_VIOLET_RED, Rgb565::CSS_YELLOW_GREEN, Rgb565::CSS_LIME_GREEN];
-
 
 
 #[link_section = ".core1_stack"]
@@ -148,28 +147,29 @@ static CUR_EMOTION: AtomicU8 = AtomicU8::new(EmotionExpression::Neutral11 as u8)
 
 static EYE_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u32, 4, 4, 1> = PubSubChannel::new();
 
-static ALL_EYEBGS_LEFT: [&[u8]; EmotionExpression::MaxCount as usize] = [
-    include_bytes!("../img/eyebg-l-neutral-11.qoi"),
-    // include_bytes!("../img/eyebg-l-happy-11.qoi"),
-    include_bytes!("../img/eyebg-l-surprise-11.qoi"),
-    // include_bytes!("../img/eyebg-l-sad-11.qoi"),
-    // include_bytes!("../img/eyebg-l-curious-11.qoi"),
-    // include_bytes!("../img/eyebg-l-skeptical-11.qoi"),
-];
+// static ALL_EYEBGS_LEFT: [&[u8]; EmotionExpression::MaxCount as usize] = [
+//     include_bytes!("../img/eyebg-l-neutral-11.qoi"),
+//     // include_bytes!("../img/eyebg-l-happy-11.qoi"),
+//     include_bytes!("../img/eyebg-l-surprise-11.qoi"),
+//     // include_bytes!("../img/eyebg-l-sad-11.qoi"),
+//     // include_bytes!("../img/eyebg-l-curious-11.qoi"),
+//     // include_bytes!("../img/eyebg-l-skeptical-11.qoi"),
+// ];
 
-static ALL_EYEBGS_RIGHT: [&[u8]; EmotionExpression::MaxCount as usize] = [
-    include_bytes!("../img/eyebg-r-neutral-11.qoi"),
-    // include_bytes!("../img/eyebg-r-happy-11.qoi"),
-    include_bytes!("../img/eyebg-r-surprise-11.qoi"),
-    // include_bytes!("../img/eyebg-r-sad-11.qoi"),
-    // include_bytes!("../img/eyebg-r-curious-11.qoi"),
-    // include_bytes!("../img/eyebg-r-skeptical-11.qoi"),
-];
+// static ALL_EYEBGS_RIGHT: [&[u8]; EmotionExpression::MaxCount as usize] = [
+//     include_bytes!("../img/eyebg-r-neutral-11.qoi"),
+//     // include_bytes!("../img/eyebg-r-happy-11.qoi"),
+//     include_bytes!("../img/eyebg-r-surprise-11.qoi"),
+//     // include_bytes!("../img/eyebg-r-sad-11.qoi"),
+//     // include_bytes!("../img/eyebg-r-curious-11.qoi"),
+//     // include_bytes!("../img/eyebg-r-skeptical-11.qoi"),
+// ];
 
 const FILE_ID_EYE_LEFT: u32 = 0;
 const FILE_ID_EYE_RIGHT: u32 = 1;
 
 import_svg_paths!(FILE_ID_EYE_LEFT, "img/eyestack-left.svg");
+
 import_svg_paths!(FILE_ID_EYE_RIGHT, "img/eyestack-right.svg");
 
 
@@ -181,15 +181,15 @@ type Spi0CsnType = embassy_rp::Peri<'static,peripherals::PIN_17>;
 type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_13> ;
 
 
-fn get_svg_path_by_id(file_id: u32, path_id: &str) -> Option<ClosedCubicBezierPath> {
+fn get_svg_path_by_id(file_id: u32, path_id: &str) -> Option<ClosedPolygon> {
     match file_id {
         FILE_ID_EYE_LEFT => get_svg_path_by_id_file_FILE_ID_EYE_LEFT(path_id),
         FILE_ID_EYE_RIGHT => get_svg_path_by_id_file_FILE_ID_EYE_RIGHT(path_id),
-        _ => None,
+        _ => { error!("Unknown path_id: {}", path_id); None }
     }
 }
 
-fn get_svg_path_by_id_checked(file_id: u32, path_id: &str) -> Option<ClosedCubicBezierPath> {
+fn get_svg_path_by_id_checked(file_id: u32, path_id: &str) -> Option<ClosedPolygon> {
     let check = get_svg_path_by_id(file_id, path_id);
     if check.is_none() {
         warn!("No path for file_id {} path_id {}", file_id, path_id);
@@ -215,24 +215,22 @@ fn hex_to_rgb565(hex_color: u32) -> Rgb565 {
     Rgb565::from(RawU16::new(rgb565_value))
 }
 
-fn render_one_bg_image<T>(
-    frame_buf: &mut FullFrameBuf, 
-    bg_img: &Image<'_, T>) 
-    where T: ImageDrawable,  Rgb565: From<<T as embedded_graphics::image::ImageDrawable>::Color>
-{       
-    let mut raw_fb =
-        RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
-    bg_img.draw(&mut raw_fb.color_converted()).unwrap(); 
-}
+// fn render_one_bg_image<T>(
+//     frame_buf: &mut FullFrameBuf, 
+//     bg_img: &Image<'_, T>) 
+//     where T: ImageDrawable,  Rgb565: From<<T as embedded_graphics::image::ImageDrawable>::Color>
+// {       
+//     let mut raw_fb =
+//         RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
+//     bg_img.draw(&mut raw_fb.color_converted()).unwrap(); 
+// }
 
 /// Lookup the preloaded ClosedPolygon and then draw it into the buffer with the style provided.
 fn draw_closed_poly(frame_buf: &mut FullFrameBuf, file_id: u32, path_id: &str, style: &PrimitiveStyle<Rgb565>) {
-    if let Some(svg_path) = get_svg_path_by_id_checked(file_id,path_id) {
-        if let Some(cpoly) = svg_path.closed_poly {
-            let mut raw_fb =
-                RawFrameBuf::<Rgb565, &mut [u8]>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
-            let _ = cpoly.into_styled(*style).draw(&mut raw_fb);
-        }
+    if let Some(cpoly) = get_svg_path_by_id_checked(file_id,path_id) {
+        let mut raw_fb =
+            RawFrameBuf::<Rgb565, &mut [u8]>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
+        let _ = cpoly.into_styled(*style).draw(&mut raw_fb);
     }
 }
 
@@ -512,12 +510,12 @@ where T: embassy_rp::spi::Instance
             DISPLAY1_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES])
         };
 
-    let mut cur_eyebg_qoi = {
-        if is_left { Qoi::new(ALL_EYEBGS_LEFT[EmotionExpression::Neutral11 as usize]).unwrap() }
-        else {Qoi::new(ALL_EYEBGS_RIGHT[EmotionExpression::Neutral11 as usize]).unwrap() }
-    };
+    // let mut cur_eyebg_qoi = {
+    //     if is_left { Qoi::new(ALL_EYEBGS_LEFT[EmotionExpression::Neutral11 as usize]).unwrap() }
+    //     else {Qoi::new(ALL_EYEBGS_RIGHT[EmotionExpression::Neutral11 as usize]).unwrap() }
+    // };
 
-    let mut eyebg_img =  Image::new(&cur_eyebg_qoi, Point::new(0,0));
+    // let mut eyebg_img =  Image::new(&cur_eyebg_qoi, Point::new(0,0));
     let mut display_dirty = true;
 
     let mut eye_ready_sub = EYE_READY_CHANNEL.subscriber().unwrap();
@@ -537,21 +535,21 @@ where T: embassy_rp::spi::Instance
         let emotion_val: EmotionExpression = CUR_EMOTION.load(Ordering::Relaxed).try_into().unwrap();
         backlight_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
 
-        let look_step = CUR_LOOK_STEP.load(Ordering::Relaxed);
+        let _look_step = CUR_LOOK_STEP.load(Ordering::Relaxed);
 
         let iris_color: Rgb565 = Rgb565::from(RawU16::new(CUR_IRIS_COLOR.load(Ordering::Relaxed)));
         let skin_color: Rgb565 = Rgb565::CSS_DARK_OLIVE_GREEN; //TODO more dynamic colors
 
         if emotion_val != last_emotion_val {
-            cur_eyebg_qoi = 
-                if is_left {
-                    Qoi::new(ALL_EYEBGS_LEFT[emotion_val as usize]).unwrap()
-                } 
-                else {
-                    Qoi::new(ALL_EYEBGS_RIGHT[emotion_val as usize]).unwrap()
-                };
+            // cur_eyebg_qoi = 
+            //     if is_left {
+            //         Qoi::new(ALL_EYEBGS_LEFT[emotion_val as usize]).unwrap()
+            //     } 
+            //     else {
+            //         Qoi::new(ALL_EYEBGS_RIGHT[emotion_val as usize]).unwrap()
+            //     };
 
-            eyebg_img = Image::new(&cur_eyebg_qoi, Point::new(0,0));
+            // eyebg_img = Image::new(&cur_eyebg_qoi, Point::new(0,0));
             last_emotion_val = emotion_val;
         }
 
