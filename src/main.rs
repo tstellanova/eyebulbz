@@ -181,7 +181,7 @@ type Spi0CsnType = embassy_rp::Peri<'static,peripherals::PIN_17>;
 type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_13> ;
 
 
-fn get_svg_path_by_id(file_id: u32, path_id: &str) -> Option<ClosedPolygon> {
+fn get_svg_path_by_id<'a>(file_id: u32, path_id: &'a str) -> Option<ClosedPolygon<'a>> {
     match file_id {
         FILE_ID_EYE_LEFT => get_svg_path_by_id_file_FILE_ID_EYE_LEFT(path_id),
         FILE_ID_EYE_RIGHT => get_svg_path_by_id_file_FILE_ID_EYE_RIGHT(path_id),
@@ -189,7 +189,7 @@ fn get_svg_path_by_id(file_id: u32, path_id: &str) -> Option<ClosedPolygon> {
     }
 }
 
-fn get_svg_path_by_id_checked(file_id: u32, path_id: &str) -> Option<ClosedPolygon> {
+fn get_svg_path_by_id_checked<'a>(file_id: u32, path_id: &'a str) -> Option<ClosedPolygon<'a>> {
     let check = get_svg_path_by_id(file_id, path_id);
     if check.is_none() {
         warn!("No path for file_id {} path_id {}", file_id, path_id);
@@ -230,7 +230,7 @@ fn draw_closed_poly(frame_buf: &mut FullFrameBuf, file_id: u32, path_id: &str, s
     if let Some(cpoly) = get_svg_path_by_id_checked(file_id,path_id) {
         let mut raw_fb =
             RawFrameBuf::<Rgb565, &mut [u8]>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
-        let _ = cpoly.into_styled(*style).draw(&mut raw_fb);
+        let _ = cpoly.clone().into_styled(*style).draw(&mut raw_fb);
     }
 }
 
