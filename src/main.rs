@@ -165,13 +165,17 @@ static EYE_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::Criti
 //     // include_bytes!("../img/eyebg-r-skeptical-11.qoi"),
 // ];
 
-const FILE_ID_EYE_LEFT: u32 = 0;
-const FILE_ID_EYE_RIGHT: u32 = 1;
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Format)]
+#[repr(u32)]
+enum SvgFileId {
+    EyeLeft,
+    EyeRight,
+    SvgFileIdCount
+}
 
-import_svg_paths!(FILE_ID_EYE_LEFT, "img/eyestack-left.svg");
 
-import_svg_paths!(FILE_ID_EYE_RIGHT, "img/eyestack-right.svg");
-
+import_svg_paths!(EyeLeft, "img/eyestack-left.svg");
+import_svg_paths!(EyeRight, "img/eyestack-right.svg");
 
 type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
 
@@ -181,18 +185,18 @@ type Spi0CsnType = embassy_rp::Peri<'static,peripherals::PIN_17>;
 type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_13> ;
 
 
-fn get_svg_path_by_id<'a>(file_id: u32, path_id: &'a str) -> Option<&'a ClosedPolygon<'a>> {
+fn get_svg_path_by_id<'a>(file_id: SvgFileId, path_id: &'a str) -> Option<&'a ClosedPolygon<'a>> {
     match file_id {
-        FILE_ID_EYE_LEFT => get_svg_path_by_id_file_FILE_ID_EYE_LEFT(path_id),
-        FILE_ID_EYE_RIGHT => get_svg_path_by_id_file_FILE_ID_EYE_RIGHT(path_id),
+        SvgFileId::EyeLeft => get_svg_path_by_id_file_EyeLeft(path_id),
+        SvgFileId::EyeRight => get_svg_path_by_id_file_EyeRight(path_id),
         _ => { error!("Unknown path_id: {}", path_id); None }
     }
 }
 
-fn get_svg_path_by_id_checked<'a>(file_id: u32, path_id: &'a str) -> Option<&'a ClosedPolygon<'a>> {
+fn get_svg_path_by_id_checked<'a>(file_id: SvgFileId, path_id: &'a str) -> Option<&'a ClosedPolygon<'a>> {
     let check = get_svg_path_by_id(file_id, path_id);
     if check.is_none() {
-        warn!("No path for file_id {} path_id {}", file_id, path_id);
+        warn!("No path for file_id {} path_id {}", file_id as u32, path_id);
     }
     check
 }
@@ -226,7 +230,7 @@ fn hex_to_rgb565(hex_color: u32) -> Rgb565 {
 // }
 
 /// Lookup the preloaded ClosedPolygon and then draw it into the buffer with the style provided.
-fn draw_closed_poly(frame_buf: &mut FullFrameBuf, file_id: u32, path_id: &str, style: &PrimitiveStyle<Rgb565>) {
+fn draw_closed_poly(frame_buf: &mut FullFrameBuf, file_id: SvgFileId, path_id: &str, style: &PrimitiveStyle<Rgb565>) {
     if let Some(cpoly) = get_svg_path_by_id_checked(file_id,path_id) {
         let mut raw_fb =
             RawFrameBuf::<Rgb565, &mut [u8]>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
@@ -591,8 +595,7 @@ where T: embassy_rp::spi::Instance
 
 fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) {
     let start_micros = Instant::now().as_micros();
-
-    let file_id: u32 = if is_left { FILE_ID_EYE_LEFT } else { FILE_ID_EYE_RIGHT };
+    let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
 
     let upper_lid_top_style = PrimitiveStyleBuilder::new()
         // .fill_color(Rgb565::CSS_OLIVE_DRAB)
@@ -608,6 +611,7 @@ fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:
         .stroke_alignment(StrokeAlignment::Center)
         .build();
 
+        
     { // just set a background color
         let mut raw_fb =
             RawFrameBuf::<Rgb565, &mut [u8]>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
@@ -631,7 +635,7 @@ fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:
 
 fn draw_inner_eye_shapes(is_left:bool, emotion: EmotionExpression, iris_color: Rgb565, frame_buf: &mut FullFrameBuf) {
     let start_micros = Instant::now().as_micros();
-    let file_id: u32 = if is_left { FILE_ID_EYE_LEFT } else { FILE_ID_EYE_RIGHT };
+    let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
 
     let sclera_style = PrimitiveStyleBuilder::new()
         .fill_color(hex_to_rgb565(0xf4eed7))
@@ -673,8 +677,7 @@ fn draw_inner_eye_shapes(is_left:bool, emotion: EmotionExpression, iris_color: R
  */
 fn draw_eyeball_overlay_shapes(is_left:bool, emotion:EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) {
     let start_micros = Instant::now().as_micros();
-
-    let file_id: u32 = if is_left { FILE_ID_EYE_LEFT } else { FILE_ID_EYE_RIGHT };
+    let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
 
     //TODO get the style info from the SVG file itself at build time?
 
