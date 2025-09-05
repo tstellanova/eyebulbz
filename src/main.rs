@@ -23,7 +23,7 @@ use embassy_time::{Delay, Instant, Timer};
 use embedded_graphics::{
     prelude::*,
     pixelcolor::{raw::RawU16, Rgb565}, 
-    primitives::{PrimitiveStyle, PrimitiveStyleBuilder}
+    primitives::{Polyline, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle}
 };
 
 use embassy_rp::multicore::{Stack};
@@ -181,7 +181,7 @@ type Spi0CsnType = embassy_rp::Peri<'static,peripherals::PIN_17>;
 type Spi1CsnType = embassy_rp::Peri<'static,peripherals::PIN_13> ;
 
 
-fn get_svg_path_by_id<'a>(file_id: u32, path_id: &'a str) -> Option<ClosedPolygon<'a>> {
+fn get_svg_path_by_id<'a>(file_id: u32, path_id: &'a str) -> Option<&'a ClosedPolygon<'a>> {
     match file_id {
         FILE_ID_EYE_LEFT => get_svg_path_by_id_file_FILE_ID_EYE_LEFT(path_id),
         FILE_ID_EYE_RIGHT => get_svg_path_by_id_file_FILE_ID_EYE_RIGHT(path_id),
@@ -189,7 +189,7 @@ fn get_svg_path_by_id<'a>(file_id: u32, path_id: &'a str) -> Option<ClosedPolygo
     }
 }
 
-fn get_svg_path_by_id_checked<'a>(file_id: u32, path_id: &'a str) -> Option<ClosedPolygon<'a>> {
+fn get_svg_path_by_id_checked<'a>(file_id: u32, path_id: &'a str) -> Option<&'a ClosedPolygon<'a>> {
     let check = get_svg_path_by_id(file_id, path_id);
     if check.is_none() {
         warn!("No path for file_id {} path_id {}", file_id, path_id);
