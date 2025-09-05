@@ -23,7 +23,7 @@ use embassy_time::{Delay, Instant, Timer};
 use embedded_graphics::{
     prelude::*,
     pixelcolor::{raw::RawU16, Rgb565}, 
-    primitives::{PrimitiveStyle, PrimitiveStyleBuilder}
+    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Polyline, Rectangle}
 };
 
 use embassy_rp::multicore::{Stack};
