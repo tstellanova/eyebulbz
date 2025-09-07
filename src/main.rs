@@ -289,9 +289,38 @@ async fn main(spawner: Spawner) {
     let total_fbuf_size = 2*FRAME_SIZE_BYTES ; //+ INNER_EYE_FBUF_SIZE_BYTES;
     info!("Start Config total_fbuf_size = {}",total_fbuf_size);
 
-    if let Some(poly_ref) = get_svg_path_by_id_checked(SvgFileId::EyeLeft, "sclera_11")
+    let all_left_poly_refs = [
+       &SVG_FILE_EyeRight_PATH_0_POLYGON,
+       &SVG_FILE_EyeRight_PATH_1_POLYGON,
+        &SVG_FILE_EyeRight_PATH_2_POLYGON,
+        &SVG_FILE_EyeRight_PATH_3_POLYGON,
+        &SVG_FILE_EyeRight_PATH_4_POLYGON,
+        &SVG_FILE_EyeRight_PATH_5_POLYGON,
+        &SVG_FILE_EyeRight_PATH_6_POLYGON,
+        &SVG_FILE_EyeRight_PATH_7_POLYGON,
+        &SVG_FILE_EyeRight_PATH_8_POLYGON,
+        &SVG_FILE_EyeRight_PATH_9_POLYGON,
+        &SVG_FILE_EyeRight_PATH_10_POLYGON,
+        &SVG_FILE_EyeRight_PATH_11_POLYGON,
+        &SVG_FILE_EyeRight_PATH_12_POLYGON,
+        &SVG_FILE_EyeRight_PATH_13_POLYGON,
+        &SVG_FILE_EyeRight_PATH_14_POLYGON,
+        &SVG_FILE_EyeRight_PATH_15_POLYGON,
+        &SVG_FILE_EyeRight_PATH_16_POLYGON,
+        &SVG_FILE_EyeRight_PATH_17_POLYGON,
+        &SVG_FILE_EyeRight_PATH_18_POLYGON,
+        &SVG_FILE_EyeRight_PATH_19_POLYGON,
+        &SVG_FILE_EyeRight_PATH_20_POLYGON,
+        &SVG_FILE_EyeRight_PATH_21_POLYGON,
+    ];
+
     {
-        info!("total size of sample poly: {}",poly_ref.total_size());
+        let mut total_size: usize = 0;
+        for poly in all_left_poly_refs {
+            total_size += poly.total_size();
+        }
+        total_size *= 2; //double for left+right eye
+        info!("total rom polys size: {}",total_size);
     }
     
 
