@@ -4,6 +4,8 @@
 use {defmt_rtt as _, panic_probe as _};
 
 use defmt::*;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embedded_graphics::primitives::StrokeAlignment;
 use core::u8;
 use core::{default::Default};
@@ -43,7 +45,7 @@ use num_enum::TryFromPrimitive;
 
 // example/src/main.rs
 use closed_svg_path_proc::import_svg_paths;
-use closed_svg_path::ClosedPolygon;
+use closed_svg_path::{ClosedPolygon,ScanlineIntersections};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -145,7 +147,10 @@ static CUR_BG_DIRTY: AtomicBool = AtomicBool::new(true);
 static CUR_IRIS_DIRTY: AtomicBool = AtomicBool::new(true);
 static CUR_EMOTION: AtomicU8 = AtomicU8::new(EmotionExpression::Neutral11 as u8);
 
-static EYE_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u32, 4, 4, 1> = PubSubChannel::new();
+
+// Static signals that can be shared between tasks
+static EYE_DATA_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, usize, 4, 4, 1> = PubSubChannel::new();
+static RIGHT_EYE_DONE_SIGNAL: Signal<CriticalSectionRawMutex, usize> = Signal::new();
 
 // static ALL_EYEBGS_LEFT: [&[u8]; EmotionExpression::MaxCount as usize] = [
 //     include_bytes!("../img/eyebg-l-neutral-11.qoi"),
@@ -241,6 +246,7 @@ fn draw_closed_poly(frame_buf: &mut FullFrameBuf, file_id: SvgFileId, path_id: &
 
 // ---- TASKS defined below ---
 
+const PUSHBUTTON_DEBOUNCE_DELAY:u64 = 25;
 // TODO make this a real interrupt handler rather than parking waiting on falling edge?
 #[embassy_executor::task]
 async fn mode_a_button_task(mut pin: Input<'static>) {
@@ -248,7 +254,7 @@ async fn mode_a_button_task(mut pin: Input<'static>) {
         pin.wait_for_falling_edge().await;
         
         // Introduce a debounce delay
-        Timer::after_millis(50).await; 
+        Timer::after_millis(PUSHBUTTON_DEBOUNCE_DELAY).await; 
 
         if pin.is_low() {
             let mut mode_a_val = MODE_A_VALUE.load(Ordering::Relaxed);
@@ -265,7 +271,7 @@ async fn mode_b_button_task(mut pin: Input<'static>) {
         pin.wait_for_falling_edge().await;
         
         // Introduce a debounce delay
-        Timer::after_millis(50).await; 
+        Timer::after_millis(PUSHBUTTON_DEBOUNCE_DELAY).await; 
 
         if pin.is_low() {
             let mut mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
@@ -362,7 +368,7 @@ async fn main(spawner: Spawner) {
     let mut iris_dirty = true ;
     let mut bg_dirty = true;
 
-    let mut loop_count: usize = 0;
+    let mut main_loop_count: usize = 0;
     let mut rnd_src = embassy_rp::clocks::RoscRng;
 
     info!("Config done");
@@ -372,7 +378,7 @@ async fn main(spawner: Spawner) {
     let mut old_mode_b_val  = u8::MAX;
     let mut emotion_val:u8 = EmotionExpression::Neutral11 as u8;
 
-    let eye_ready_pub = EYE_READY_CHANNEL.publisher().unwrap();
+    let eye_redraw_data_ready_pub = EYE_DATA_READY_CHANNEL.publisher().unwrap();
 
     // Main drawing loop, runs forever
     loop {
@@ -381,62 +387,65 @@ async fn main(spawner: Spawner) {
         let mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
         let mut brightness_percent = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
 
-        let mut look_step = (loop_count % 3).try_into().unwrap();
+        let mut look_step = (main_loop_count % 3).try_into().unwrap();
         let mut frame_render_gap_millis = INTERFRAME_DELAY_MILLIS;
 
-
-        let iris_color: Rgb565 =
-            match mode_a_val {
-                TestModeA::Staring => { 
-                    look_step = 0;
-                    brightness_percent = 100;
-                    brightness_ascending = false;
-                    frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
-                    Rgb565::CSS_MAGENTA 
-                },
-                TestModeA::BackAndForth => { 
-                    // flip back and forth
-                    if emotion_val == EmotionExpression::Neutral11 as u8 {
-                        emotion_val = EmotionExpression::Surprise as u8;
-                    }
-                    else if emotion_val == EmotionExpression::Surprise as u8 {
-                        emotion_val = EmotionExpression::Neutral11 as u8;
-                    }
-                    iris_dirty = true;
-                    Rgb565::CSS_MEDIUM_TURQUOISE 
-                },
-                TestModeA::PurpleSweep => {
-                    brightness_percent = 50;
-                    brightness_ascending = true;
-                    iris_dirty = true;
-                    let color_idx = loop_count % IRIS_PALETTE_PURPLE.len();
-                    IRIS_PALETTE_PURPLE[color_idx]  
-                },
-                _ => {
-                    let mut rng_bytes:[u8;4] = [0; 4];
-                    rnd_src.fill_bytes(&mut rng_bytes);
-                    look_step = ( rng_bytes[3] % 3).try_into().unwrap();
-                    iris_dirty = true;
-                    Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2])
-                }
-        };
+        let mut iris_color: Rgb565 = Rgb565::CSS_MAGENTA ;
+        
+        match mode_a_val {
+            TestModeA::Staring => { 
+                look_step = 0;
+                brightness_percent = 100;
+                brightness_ascending = false;
+                frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
+            },
+            TestModeA::BackAndForth => { 
+                iris_color = Rgb565::CSS_MEDIUM_TURQUOISE ;
+            },
+            TestModeA::PurpleSweep => {
+                brightness_percent = 50;
+                brightness_ascending = true;
+                iris_dirty = true;
+                let color_idx = main_loop_count % IRIS_PALETTE_PURPLE.len();
+                iris_color = IRIS_PALETTE_PURPLE[color_idx]  
+            },
+            _ => {
+                frame_render_gap_millis = INTERFRAME_DELAY_MILLIS / 2;
+                let mut rng_bytes:[u8;4] = [0; 4];
+                rnd_src.fill_bytes(&mut rng_bytes);
+                look_step = ( rng_bytes[3] % 3).try_into().unwrap();
+                iris_dirty = true;
+                iris_color = Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2])
+            }
+        }
     
+        let mut force_switch_emotion = false;
+        if mode_a_val == TestModeA::BackAndForth || mode_a_val == TestModeA::Randomize {
+            // flip loop direction back and forth
+            if emotion_val == EmotionExpression::Neutral11 as u8 {
+                emotion_val = EmotionExpression::Surprise as u8;
+            }
+            else if emotion_val == EmotionExpression::Surprise as u8 {
+                emotion_val = EmotionExpression::Neutral11 as u8;
+            }
+            force_switch_emotion = true;
+            iris_dirty = true;
+        }
+
         if old_mode_a_val != mode_a_val  {
-            info!("old mode_a: {} new: {}", old_mode_a_val, mode_a_val);
-            loop_count = 0;
+            info!("mode_a old: {} new: {}", old_mode_a_val, mode_a_val);
             iris_dirty = true;
             bg_dirty = true;
             old_mode_a_val = mode_a_val;
         }
 
         if old_mode_b_val != mode_b_val {
-            info!("old mode_b: {} new: {}", old_mode_b_val, mode_b_val);
-            loop_count = 0;
+            info!("mode_b old: {} new: {}", old_mode_b_val, mode_b_val);
             iris_dirty = true;
             bg_dirty = true;
             old_mode_b_val = mode_b_val;
-            if mode_a_val != TestModeA::BackAndForth {
-                // switch emotions
+            if !force_switch_emotion {
+                // update emotion normally
                 emotion_val = mode_b_val;
             }
         }
@@ -479,19 +488,16 @@ async fn main(spawner: Spawner) {
         // At this point, all of the config data points required to re-render the frame have been calculated
         // and passed as atomics. Publish a message to start rendering.
 
-        eye_ready_pub.publish(loop_count.try_into().unwrap()).await;
-   
+        eye_redraw_data_ready_pub.publish(main_loop_count.try_into().unwrap()).await;
 
         led.set_low();
+        main_loop_count += 1;
 
         // give some time to inter-task stuff
         Timer::after_millis(frame_render_gap_millis.try_into().unwrap()).await;
 
-        loop_count += 1;
-
         iris_dirty = false;
         bg_dirty = false;
-
 
     }
 }
@@ -522,15 +528,26 @@ where T: embassy_rp::spi::Instance
     // let mut eyebg_img =  Image::new(&cur_eyebg_qoi, Point::new(0,0));
     let mut display_dirty = true;
 
-    let mut eye_ready_sub = EYE_READY_CHANNEL.subscriber().unwrap();
+    let mut eye_ready_sub = EYE_DATA_READY_CHANNEL.subscriber().unwrap();
     let mut last_emotion_val = EmotionExpression::Neutral11;
 
-    let mut loop_count: usize = 0;
+    let mut redraw_loop_count: usize = 0;
     let mut loop_elapsed_total: u64 = 0;
 
     loop {
         // sync on eye parameters data ready
-        let _eye_ready_msg = eye_ready_sub.next_message_pure().await;
+        let eye_ready_msg:embassy_sync::pubsub::WaitResult<usize> = eye_ready_sub.next_message().await; 
+        match eye_ready_msg {
+             embassy_sync::pubsub::WaitResult::Lagged(missed_count) => {
+                warn!("Missed {} syncs", missed_count);
+             },
+            embassy_sync::pubsub::WaitResult:: Message(redraw_sync_count) => {
+                //info!("redraw_sync_count {} ", redraw_sync_count);
+                if (redraw_loop_count+1) != redraw_sync_count {
+                    warn!("loop_count {} redraw_sync_count {}", redraw_loop_count, redraw_sync_count);
+                }
+             }
+        }
         let loop_start_micros = Instant::now().as_micros();
 
         let bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
@@ -581,12 +598,24 @@ where T: embassy_rp::spi::Instance
             display_dirty = false;
         }
 
-        loop_count += 1;
+        redraw_loop_count += 1;
+        // synchronize left and right eye drawing
+        if is_left {
+            let right_eye_loop_count = RIGHT_EYE_DONE_SIGNAL.wait().await;
+            if right_eye_loop_count != redraw_loop_count {
+                warn!("loop_count left {} != right {}",redraw_loop_count, right_eye_loop_count);
+            }
+        }
+        else {
+            // right eye is done drawing to screen -- notify folks waiting on this
+            RIGHT_EYE_DONE_SIGNAL.signal(redraw_loop_count);
+        }
+
         let loop_finished_micros = Instant::now().as_micros();
         let loop_elapsed_micros = loop_finished_micros - loop_start_micros;
         loop_elapsed_total += loop_elapsed_micros;
-        if loop_count % 1000 == 0 {
-            let avg_loop_elapsed = loop_elapsed_total / loop_count as u64;
+        if redraw_loop_count % 1000 == 0 {
+            let avg_loop_elapsed = loop_elapsed_total / redraw_loop_count as u64;
             info!("avg redraw micros: {}",avg_loop_elapsed);
         }
     }
