@@ -289,6 +289,12 @@ async fn main(spawner: Spawner) {
     let total_fbuf_size = 2*FRAME_SIZE_BYTES ; //+ INNER_EYE_FBUF_SIZE_BYTES;
     info!("Start Config total_fbuf_size = {}",total_fbuf_size);
 
+    if let Some(poly_ref) = get_svg_path_by_id_checked(SvgFileId::EyeLeft, "sclera_11")
+    {
+        info!("total size of sample poly: {}",poly_ref.total_size());
+    }
+    
+
     // Read MSP at runtime
     let sp: u32 = cortex_m::register::msp::read();
     info!("Main MSP (Core0) = {:#010X}", sp);
