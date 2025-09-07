@@ -246,7 +246,7 @@ fn draw_closed_poly(frame_buf: &mut FullFrameBuf, file_id: SvgFileId, path_id: &
 
 // ---- TASKS defined below ---
 
-const PUSHBUTTON_DEBOUNCE_DELAY:u64 = 25;
+const PUSHBUTTON_DEBOUNCE_DELAY:u64 = 20;
 // TODO make this a real interrupt handler rather than parking waiting on falling edge?
 #[embassy_executor::task]
 async fn mode_a_button_task(mut pin: Input<'static>) {
@@ -616,7 +616,7 @@ where T: embassy_rp::spi::Instance
         loop_elapsed_total += loop_elapsed_micros;
         if redraw_loop_count % 1000 == 0 {
             let avg_loop_elapsed = loop_elapsed_total / redraw_loop_count as u64;
-            info!("avg redraw micros: {}",avg_loop_elapsed);
+            info!("avg mainloop micros: {}",avg_loop_elapsed);
         }
     }
 }
@@ -657,7 +657,7 @@ fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:
     }
 
     let _elapsed_micros = Instant::now().as_micros() - start_micros;
-    info!("bg redraw micros: {}", _elapsed_micros);
+    // info!("bg redraw micros: {}", _elapsed_micros);
 }
 
 
@@ -676,7 +676,7 @@ fn draw_inner_eye_shapes(is_left:bool, emotion: EmotionExpression, iris_color: R
     let iris_style = PrimitiveStyleBuilder::new()
         .fill_color(iris_color)
         .stroke_color(Rgb565::CSS_BLACK)
-        .stroke_width(4)
+        .stroke_width(1) // TODO polyline redraw with stroke width > 1 is currently very slow-- why?
         .stroke_alignment(StrokeAlignment::Center)
         .build();
 
@@ -696,8 +696,9 @@ fn draw_inner_eye_shapes(is_left:bool, emotion: EmotionExpression, iris_color: R
         draw_closed_poly(frame_buf, file_id, "glint_lg_11",&PrimitiveStyle::with_fill(Rgb565::WHITE));
         draw_closed_poly(frame_buf, file_id, "glint_sm_11", &PrimitiveStyle::with_fill(Rgb565::WHITE));
     }
+
     let _elapsed_micros = Instant::now().as_micros() - start_micros;
-    // info!("inner redraw micros: {}", _elapsed_micros);
+    info!("inner redraw micros: {}", _elapsed_micros);
 
 }
 
