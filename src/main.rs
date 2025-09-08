@@ -671,7 +671,8 @@ where T: embassy_rp::spi::Instance
 }
 
 
-fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) {
+fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) 
+{
     let start_micros = Instant::now().as_micros();
     let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
 
@@ -688,7 +689,10 @@ fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:
         .stroke_width(1)
         .stroke_alignment(StrokeAlignment::Center)
         .build();
-
+    let test_ellipse_style  = PrimitiveStyleBuilder::new()
+        .fill_color( Rgb565::CSS_LIGHT_GREEN )
+        .stroke_color(Rgb565::BLACK)
+        .build();
         
     { // just set a background color
         let mut raw_fb =
@@ -697,9 +701,9 @@ fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:
     }
 
     if !is_left {
-        draw_closed_poly(frame_buf, file_id, "ellipse01", &PrimitiveStyle::with_fill(Rgb565::CSS_LIGHT_GREEN));
+        draw_closed_poly(frame_buf, file_id, "ellipse01", &test_ellipse_style);
     }
-    
+
     if emotion == EmotionExpression::Surprise {
         draw_closed_poly(frame_buf, file_id, "upper_lid_top_10", &upper_lid_top_style);
         draw_closed_poly(frame_buf, file_id, "eyebrow_10", &brow_style);
@@ -712,8 +716,6 @@ fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:
     let _elapsed_micros = Instant::now().as_micros() - start_micros;
     // info!("bg redraw micros: {}", _elapsed_micros);
 }
-
-
 
 fn draw_inner_eye_shapes(is_left:bool, emotion: EmotionExpression, iris_color: Rgb565, frame_buf: &mut FullFrameBuf) {
     let start_micros = Instant::now().as_micros();

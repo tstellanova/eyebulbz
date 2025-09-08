@@ -23,5 +23,10 @@ fn main() {
     f.write_all(rp235x_riscv_x).unwrap();
     println!("cargo:rerun-if-changed=rp235x_riscv.x");
 
+    // SVG files need special handling because of the proc_macro
+    println!("cargo:rerun-if-changed=img/eyestack-left.svg");
+    println!("cargo:rerun-if-changed=img/eyestack-right.svg");
+
     println!("cargo:rerun-if-changed=build.rs");
 }
+
