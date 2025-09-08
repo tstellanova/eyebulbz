@@ -191,14 +191,5 @@
        id="image1"
        x="0"
        y="0"
-       style="display:inline" /></g><g
-     inkscape:groupmode="layer"
-     id="layer2"
-     inkscape:label="testo"><ellipse
-       style="fill:#e3fb94;fill-opacity:1;stroke:#1d1d1d;stroke-width:1.62727"
-       id="ellipse01"
-       cx="120"
-       cy="70"
-       rx="80"
-       ry="20"
-       transform="rotate(-15)" /></g></svg>
+       style="display:inline" /></g>
+</svg>

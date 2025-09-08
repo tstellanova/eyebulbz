@@ -700,8 +700,8 @@ fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:
         let _ = raw_fb.clear(skin_color); //hex_to_rgb565(0x646464));
     }
 
-    if !is_left {
-        draw_closed_poly(frame_buf, file_id, "ellipse01", &test_ellipse_style);
+    if is_left {
+        draw_closed_poly(frame_buf, file_id, "bg_ellipse01", &test_ellipse_style);
     }
 
     if emotion == EmotionExpression::Surprise {
@@ -714,7 +714,8 @@ fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:
     }
 
     let _elapsed_micros = Instant::now().as_micros() - start_micros;
-    // info!("bg redraw micros: {}", _elapsed_micros);
+    info!("bg redraw {} micros: {}", is_left, _elapsed_micros);
+
 }
 
 fn draw_inner_eye_shapes(is_left:bool, emotion: EmotionExpression, iris_color: Rgb565, frame_buf: &mut FullFrameBuf) {
@@ -753,7 +754,7 @@ fn draw_inner_eye_shapes(is_left:bool, emotion: EmotionExpression, iris_color: R
     }
 
     let _elapsed_micros = Instant::now().as_micros() - start_micros;
-    info!("inner redraw micros: {}", _elapsed_micros);
+    info!("inner redraw {} micros: {}", is_left, _elapsed_micros);
 
 }
 
