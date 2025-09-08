@@ -609,6 +609,20 @@ where T: embassy_rp::spi::Instance
             last_emotion_val = emotion_val;
         }
 
+        // Listing here the overlapping regions of the eye that 
+        // stack up and are visible to an observer:
+        // - surrounding skin and brow
+        // - sclera
+        // - corners
+        // - iris
+        // - lower eyelid
+        // - upper eyelid
+        // The lids themselves can be though of as consisting of multiple parts:
+        // - bulge
+        // - bright region
+        // - infraorbital furrow
+        // Ref: Moriyama, Xiao, Cohn 2004
+
         if bg_dirty || display_dirty  {
             // TODO eliminate rasterized background image?
             // render_one_bg_image(disp_frame_buf, &eyebg_img);
@@ -682,6 +696,10 @@ fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:
         let _ = raw_fb.clear(skin_color); //hex_to_rgb565(0x646464));
     }
 
+    if !is_left {
+        draw_closed_poly(frame_buf, file_id, "ellipse01", &PrimitiveStyle::with_fill(Rgb565::CSS_LIGHT_GREEN));
+    }
+    
     if emotion == EmotionExpression::Surprise {
         draw_closed_poly(frame_buf, file_id, "upper_lid_top_10", &upper_lid_top_style);
         draw_closed_poly(frame_buf, file_id, "eyebrow_10", &brow_style);
