@@ -9,7 +9,7 @@ use embassy_sync::signal::Signal;
 use embedded_graphics::primitives::StrokeAlignment;
 use core::u8;
 use core::{default::Default};
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, AtomicUsize, Ordering};
 
 
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
@@ -45,7 +45,7 @@ use num_enum::TryFromPrimitive;
 
 // example/src/main.rs
 use closed_svg_path_proc::import_svg_paths;
-use closed_svg_path::{ClosedPolygon,ScanlineIntersections};
+use closed_svg_path::{ClosedPolygon,ScanlineIntersections,GazeDirection};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -93,15 +93,7 @@ const INTERFRAME_DELAY_MILLIS:usize = 240;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Format)]
 #[repr(u8)]
 enum EmotionExpression {
-    Neutral11, // straight ahead
-    // Neutral10 = 1, // west
-    // Neutral12 = 2, // east
-    // Neutral00 = 3, // northwest
-    // Neutral01 = 4, // north 
-    // Neutral02 = 5, // northeast
-    // Neutral20 = 6, // southwest
-    // Neutral21 = 7, // south
-    // Netural22 = 8, // southeast
+    Neutral, // no strong expression
     // Happy = 9,
     Surprise,
     // Curious 
@@ -113,6 +105,8 @@ enum EmotionExpression {
     // Trepidation 
     MaxCount
 }
+
+const MAX_MODE_B_VAL: u8 = GazeDirection::MaxCount as u8;
 
 const IRIS_PALETTE_PURPLE: [Rgb565; 8] = [ 
     Rgb565::CSS_INDIGO, 
@@ -145,8 +139,8 @@ static CUR_IRIS_COLOR: AtomicU16 = AtomicU16::new(0x18ff);
 static CUR_LOOK_STEP: AtomicU8 = AtomicU8::new(0);
 static CUR_BG_DIRTY: AtomicBool = AtomicBool::new(true);
 static CUR_IRIS_DIRTY: AtomicBool = AtomicBool::new(true);
-static CUR_EMOTION: AtomicU8 = AtomicU8::new(EmotionExpression::Neutral11 as u8);
-
+static CUR_EMOTION: AtomicU8 = AtomicU8::new(EmotionExpression::Neutral as u8);
+static CUR_GAZE_DIR: AtomicU8 = AtomicU8::new(GazeDirection::StraightAhead as u8);
 
 // Static signals that can be shared between tasks
 static EYE_DATA_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, usize, 4, 4, 1> = PubSubChannel::new();
@@ -178,7 +172,6 @@ enum SvgFileId {
     SvgFileIdCount
 }
 
-
 import_svg_paths!(EyeLeft, "img/eyestack-left.svg");
 import_svg_paths!(EyeRight, "img/eyestack-right.svg");
 
@@ -201,7 +194,7 @@ fn get_svg_path_by_id<'a>(file_id: SvgFileId, path_id: &'a str) -> Option<&'a Cl
 fn get_svg_path_by_id_checked<'a>(file_id: SvgFileId, path_id: &'a str) -> Option<&'a ClosedPolygon<'a>> {
     let check = get_svg_path_by_id(file_id, path_id);
     if check.is_none() {
-        warn!("No path for file_id {} path_id {}", file_id as u32, path_id);
+        warn!("No path for  {}:{}", file_id, path_id);
     }
     check
 }
@@ -275,7 +268,7 @@ async fn mode_b_button_task(mut pin: Input<'static>) {
 
         if pin.is_low() {
             let mut mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
-            mode_b_val = (mode_b_val + 1) % EmotionExpression::MaxCount as u8;
+            mode_b_val = (mode_b_val + 1) % MAX_MODE_B_VAL;
             MODE_B_VALUE.store(mode_b_val, Ordering::Relaxed);
         }
     }
@@ -330,7 +323,7 @@ async fn main(spawner: Spawner) {
 
     // prep for reading mode change events
     MODE_A_VALUE.store(TestModeA::Staring as u8, Ordering::Relaxed);
-    MODE_B_VALUE.store(EmotionExpression::Neutral11 as u8, Ordering::Relaxed);
+    MODE_B_VALUE.store(GazeDirection::StraightAhead as u8, Ordering::Relaxed);
 
     let mut led = Output::new(p.PIN_25, Level::High);
 
@@ -411,7 +404,8 @@ async fn main(spawner: Spawner) {
     let mut brightness_ascending: bool = true;
     let mut old_mode_a_val  = TestModeA::Staring;
     let mut old_mode_b_val  = u8::MAX;
-    let mut emotion_val:u8 = EmotionExpression::Neutral11 as u8;
+    let mut emotion_val = EmotionExpression::Neutral ;
+    let mut cur_gaze_dir = GazeDirection::StraightAhead;
 
     let eye_redraw_data_ready_pub = EYE_DATA_READY_CHANNEL.publisher().unwrap();
 
@@ -454,16 +448,16 @@ async fn main(spawner: Spawner) {
             }
         }
     
-        let mut force_switch_emotion = false;
+        let mut force_switch_gaze_dir = false;
         if mode_a_val == TestModeA::BackAndForth || mode_a_val == TestModeA::Randomize {
             // flip loop direction back and forth
-            if emotion_val == EmotionExpression::Neutral11 as u8 {
-                emotion_val = EmotionExpression::Surprise as u8;
-            }
-            else if emotion_val == EmotionExpression::Surprise as u8 {
-                emotion_val = EmotionExpression::Neutral11 as u8;
-            }
-            force_switch_emotion = true;
+            cur_gaze_dir = match cur_gaze_dir  {
+                GazeDirection::West=>{GazeDirection::StraightAhead}
+                GazeDirection::StraightAhead=>{GazeDirection::East}
+                GazeDirection::East => {GazeDirection::West}
+                _=> {GazeDirection::StraightAhead}
+            };
+            force_switch_gaze_dir = true;
             iris_dirty = true;
         }
 
@@ -477,11 +471,15 @@ async fn main(spawner: Spawner) {
         if old_mode_b_val != mode_b_val {
             info!("mode_b old: {} new: {}", old_mode_b_val, mode_b_val);
             iris_dirty = true;
-            bg_dirty = true;
+            // TODO as the meaning of mode_b button changes, bg_dirty may or may not be true
+            // bg_dirty = true; // emotion has changed, likely background changes with that
             old_mode_b_val = mode_b_val;
-            if !force_switch_emotion {
-                // update emotion normally
-                emotion_val = mode_b_val;
+            if !force_switch_gaze_dir {
+                // update normally
+               const AVAIL_GAZE_DIRS: [GazeDirection; 3] = [GazeDirection::West, GazeDirection::StraightAhead, GazeDirection::East];
+               let dumb_idx = mode_b_val as usize % AVAIL_GAZE_DIRS.len();
+               cur_gaze_dir = AVAIL_GAZE_DIRS[dumb_idx];
+            // cur_gaze_dir =  mode_b_val.try_into().unwrap();/
             }
         }
 
@@ -513,7 +511,8 @@ async fn main(spawner: Spawner) {
 
         // ship all the redraw config values
         // info!("emotion_val: {}", emotion_val);
-        CUR_EMOTION.store(emotion_val, Ordering::Relaxed);
+        CUR_GAZE_DIR.store(cur_gaze_dir as u8, Ordering::Relaxed);
+        CUR_EMOTION.store(emotion_val as u8, Ordering::Relaxed);
         CUR_LOOK_STEP.store(look_step, Ordering::Relaxed);
         CUR_IRIS_COLOR.store(iris_color.into_storage(), Ordering::Relaxed);
         CUR_IRIS_DIRTY.store(iris_dirty, Ordering::Relaxed);
@@ -564,7 +563,7 @@ where T: embassy_rp::spi::Instance
     let mut display_dirty = true;
 
     let mut eye_ready_sub = EYE_DATA_READY_CHANNEL.subscriber().unwrap();
-    let mut last_emotion_val = EmotionExpression::Neutral11;
+    let mut last_emotion_val = EmotionExpression::Neutral;
 
     let mut redraw_loop_count: usize = 0;
     let mut loop_elapsed_total: u64 = 0;
@@ -587,11 +586,13 @@ where T: embassy_rp::spi::Instance
 
         let bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
         let iris_dirty = CUR_IRIS_DIRTY.load(Ordering::Relaxed);
-        let brightness_percent: u8 = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed).try_into().unwrap();
+        let brightness_percent: u8 = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
         let emotion_val: EmotionExpression = CUR_EMOTION.load(Ordering::Relaxed).try_into().unwrap();
+        let cur_gaze_dir: GazeDirection = CUR_GAZE_DIR.load(Ordering::Relaxed).try_into().unwrap();
+        let _look_step: u8 = CUR_LOOK_STEP.load(Ordering::Relaxed);
+
         backlight_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
 
-        let _look_step = CUR_LOOK_STEP.load(Ordering::Relaxed);
 
         let iris_color: Rgb565 = Rgb565::from(RawU16::new(CUR_IRIS_COLOR.load(Ordering::Relaxed)));
         let skin_color: Rgb565 = Rgb565::CSS_DARK_OLIVE_GREEN; //TODO more dynamic colors
@@ -609,30 +610,37 @@ where T: embassy_rp::spi::Instance
             last_emotion_val = emotion_val;
         }
 
-        // Listing here the overlapping regions of the eye that 
-        // stack up and are visible to an observer:
-        // - surrounding skin and brow
-        // - sclera
-        // - corners
-        // - iris
-        // - lower eyelid
-        // - upper eyelid
-        // The lids themselves can be though of as consisting of multiple parts:
-        // - bulge
-        // - bright region
-        // - infraorbital furrow
-        // Ref: Moriyama, Xiao, Cohn 2004
+        /*
+        Listing here the overlapping regions of the eye that 
+         stack up and are visible to an observer, in part from
+         reference: Moriyama, Xiao, Cohn 2004
+        Background:
+         - surrounding skin
+         - brow
+        Eyeball:
+         - sclera
+         - corners - ref region5 and region6 
+         - iris -- we specify additional sub-parts beyond reference
+         - lower eyelid 
+            - ref region2 and region3
+            - ref curve5 infraorbital furrow
+         - upper eyelid - ref region1
+         The lids themselves can be though of as consisting of multiple parts:
+         - bulge
+         bright region
+         - infraorbital furrow
+        */
 
         if bg_dirty || display_dirty  {
             // TODO eliminate rasterized background image?
             // render_one_bg_image(disp_frame_buf, &eyebg_img);
-            draw_background_shapes(is_left, emotion_val,skin_color, disp_frame_buf);
+            draw_background_shapes(is_left, cur_gaze_dir, emotion_val, skin_color, disp_frame_buf);
             display_dirty = true;
         }
 
         if iris_dirty || display_dirty  {
-            draw_inner_eye_shapes(is_left, emotion_val, iris_color, disp_frame_buf);
-            draw_eyeball_overlay_shapes(is_left, emotion_val, skin_color, disp_frame_buf);
+            draw_inner_eye_shapes(is_left, cur_gaze_dir, emotion_val, iris_color, disp_frame_buf);
+            draw_eyeball_overlay_shapes(is_left, cur_gaze_dir, emotion_val, skin_color, disp_frame_buf);
             display_dirty = true;
         }
 
@@ -671,7 +679,7 @@ where T: embassy_rp::spi::Instance
 }
 
 
-fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) 
+fn draw_background_shapes(is_left: bool, gaze_dir: GazeDirection, emotion: EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) 
 {
     let start_micros = Instant::now().as_micros();
     let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
@@ -704,7 +712,7 @@ fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:
         draw_closed_poly(frame_buf, file_id, "bg_ellipse01", &test_ellipse_style);
     }
 
-    if emotion == EmotionExpression::Surprise {
+    if gaze_dir == GazeDirection::West {
         draw_closed_poly(frame_buf, file_id, "upper_lid_top_10", &upper_lid_top_style);
         draw_closed_poly(frame_buf, file_id, "eyebrow_10", &brow_style);
     }
@@ -718,16 +726,12 @@ fn draw_background_shapes(is_left: bool, emotion: EmotionExpression, skin_color:
 
 }
 
-fn draw_inner_eye_shapes(is_left:bool, emotion: EmotionExpression, iris_color: Rgb565, frame_buf: &mut FullFrameBuf) {
+
+fn draw_inner_eye_shapes(is_left:bool, cur_gaze_dir: GazeDirection, emotion: EmotionExpression, iris_color: Rgb565, frame_buf: &mut FullFrameBuf) {
+    static RUN_COUNT:AtomicUsize = AtomicUsize::new(0);
+    static TOTAL_ELAPSED_MICROS:AtomicUsize = AtomicUsize::new(0);
     let start_micros = Instant::now().as_micros();
     let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
-
-    let sclera_style = PrimitiveStyleBuilder::new()
-        .fill_color(hex_to_rgb565(0xf4eed7))
-        .stroke_color(Rgb565::BLACK)
-        .stroke_width(1)
-        .stroke_alignment(StrokeAlignment::Center)
-        .build();
 
     let iris_style = PrimitiveStyleBuilder::new()
         .fill_color(iris_color)
@@ -735,33 +739,52 @@ fn draw_inner_eye_shapes(is_left:bool, emotion: EmotionExpression, iris_color: R
         .stroke_width(1) // TODO polyline redraw with stroke width > 1 is currently very slow-- why?
         .stroke_alignment(StrokeAlignment::Center)
         .build();
+        
+    // In our model, the sclera never changes. Other things draw over this.
+    draw_closed_poly(frame_buf, file_id, "sclera", &PrimitiveStyle::with_fill(hex_to_rgb565(0xf4eed7)));
 
-    if emotion == EmotionExpression::Surprise {
-        draw_closed_poly(frame_buf, file_id, "sclera_10", &sclera_style);
-        draw_closed_poly(frame_buf, file_id, "iris_10", &iris_style);
-        draw_closed_poly(frame_buf, file_id, "iris_shadow_top_10", &PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
-        draw_closed_poly(frame_buf, file_id, "pupil_10", &PrimitiveStyle::with_fill(Rgb565::BLACK));
-        draw_closed_poly(frame_buf, file_id, "glint_lg_10",&PrimitiveStyle::with_fill(Rgb565::WHITE));
-        draw_closed_poly(frame_buf, file_id, "glint_sm_10", &PrimitiveStyle::with_fill(Rgb565::WHITE));
-    }
-    else {
-        draw_closed_poly(frame_buf, file_id, "sclera_11", &sclera_style);
-        draw_closed_poly(frame_buf, file_id, "iris_11", &iris_style);
-        draw_closed_poly(frame_buf, file_id, "iris_shadow_top_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
-        draw_closed_poly(frame_buf, file_id, "pupil_11", &PrimitiveStyle::with_fill(Rgb565::BLACK));
-        draw_closed_poly(frame_buf, file_id, "glint_lg_11",&PrimitiveStyle::with_fill(Rgb565::WHITE));
-        draw_closed_poly(frame_buf, file_id, "glint_sm_11", &PrimitiveStyle::with_fill(Rgb565::WHITE));
-    }
+    match cur_gaze_dir {
+        GazeDirection::West => {
+            draw_closed_poly(frame_buf, file_id, "iris_10", &iris_style);
+            draw_closed_poly(frame_buf, file_id, "iris_shadow_top_10", &PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
+            draw_closed_poly(frame_buf, file_id, "pupil_10", &PrimitiveStyle::with_fill(Rgb565::BLACK));
+            draw_closed_poly(frame_buf, file_id, "glint_lg_10",&PrimitiveStyle::with_fill(Rgb565::WHITE));
+            draw_closed_poly(frame_buf, file_id, "glint_sm_10", &PrimitiveStyle::with_fill(Rgb565::WHITE));
+        },
+        GazeDirection::East => {
+            draw_closed_poly(frame_buf, file_id, "iris_12", &iris_style);
+            draw_closed_poly(frame_buf, file_id, "iris_shadow_top_12", &PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
+            draw_closed_poly(frame_buf, file_id, "pupil_12", &PrimitiveStyle::with_fill(Rgb565::BLACK));
+            draw_closed_poly(frame_buf, file_id, "glint_lg_12",&PrimitiveStyle::with_fill(Rgb565::WHITE));
+            draw_closed_poly(frame_buf, file_id, "glint_sm_12", &PrimitiveStyle::with_fill(Rgb565::WHITE));
+        },
+        _ =>{ // Handle as StraightAhead
+            draw_closed_poly(frame_buf, file_id, "iris_11", &iris_style);
+            draw_closed_poly(frame_buf, file_id, "iris_shadow_top_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
+            draw_closed_poly(frame_buf, file_id, "pupil_11", &PrimitiveStyle::with_fill(Rgb565::BLACK));
+            draw_closed_poly(frame_buf, file_id, "glint_lg_11",&PrimitiveStyle::with_fill(Rgb565::WHITE));
+            draw_closed_poly(frame_buf, file_id, "glint_sm_11", &PrimitiveStyle::with_fill(Rgb565::WHITE));
+        },
+    };
 
-    let _elapsed_micros = Instant::now().as_micros() - start_micros;
-    info!("inner redraw {} micros: {}", is_left, _elapsed_micros);
+    let _elapsed_micros:usize = (Instant::now().as_micros() - start_micros).try_into().unwrap();
+    let total_elapsed = TOTAL_ELAPSED_MICROS.fetch_add(_elapsed_micros, Ordering::Relaxed);
+    let total_runs = RUN_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if total_runs > 100 {
+        let total_elapsed = total_elapsed + _elapsed_micros;
+        let avg_elapsed_micros = total_elapsed / total_runs;
+        info!("inner redraw avg micros: {}", avg_elapsed_micros);
+        // reset benchmarker
+        TOTAL_ELAPSED_MICROS.store(_elapsed_micros, Ordering::Relaxed);
+        RUN_COUNT.store(1, Ordering::Relaxed);
+    }
 
 }
 
 /**
  * Draw shapes that overlay the eyeball (sclera and all) after drawing the iris etc
  */
-fn draw_eyeball_overlay_shapes(is_left:bool, emotion:EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) {
+fn draw_eyeball_overlay_shapes(is_left:bool, gaze_dir: GazeDirection, _emotion:EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) {
     let start_micros = Instant::now().as_micros();
     let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
 
@@ -779,23 +802,17 @@ fn draw_eyeball_overlay_shapes(is_left:bool, emotion:EmotionExpression, skin_col
         .build();
 
     let lower_lid_style = PrimitiveStyleBuilder::new()
-        // .fill_color(Rgb565::CSS_OLIVE_DRAB)
         .fill_color(skin_color)
         .stroke_color(Rgb565::CSS_BLACK)
         .stroke_width(1)
         .stroke_alignment(StrokeAlignment::Center)
         .build();
+ 
+    // if emotion == EmotionExpression::Surprise { //TODO handle emotions 
+    draw_closed_poly(frame_buf, file_id, "lower_lid_neutral", &lower_lid_style);
+    draw_closed_poly(frame_buf, file_id, "upper_lid_shadow_neutral", &upper_lid_shadow_style);
+    draw_closed_poly(frame_buf, file_id, "upper_lid_neutral", &upper_lid_style);
 
-    if emotion == EmotionExpression::Surprise {
-        draw_closed_poly(frame_buf, file_id, "lower_lid_10", &lower_lid_style);
-        draw_closed_poly(frame_buf, file_id, "upper_lid_shadow_10", &upper_lid_shadow_style);
-        draw_closed_poly(frame_buf, file_id, "upper_lid_10", &upper_lid_style);
-    }
-    else {
-        draw_closed_poly(frame_buf, file_id, "lower_lid_11", &lower_lid_style);
-        draw_closed_poly(frame_buf, file_id, "upper_lid_shadow_11", &upper_lid_shadow_style);
-        draw_closed_poly(frame_buf, file_id, "upper_lid_11", &upper_lid_style);
-    }
     let _elapsed_micros = Instant::now().as_micros() - start_micros;
     // info!("overlay redraw micros: {}", _elapsed_micros);
 }
