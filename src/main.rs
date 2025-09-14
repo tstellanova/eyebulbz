@@ -146,22 +146,23 @@ static CUR_GAZE_DIR: AtomicU8 = AtomicU8::new(GazeDirection::StraightAhead as u8
 static EYE_DATA_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, usize, 4, 4, 1> = PubSubChannel::new();
 static RIGHT_EYE_DONE_SIGNAL: Signal<CriticalSectionRawMutex, usize> = Signal::new();
 
+
 // static ALL_EYEBGS_LEFT: [&[u8]; EmotionExpression::MaxCount as usize] = [
-//     include_bytes!("../img/eyebg-l-neutral-11.qoi"),
-//     // include_bytes!("../img/eyebg-l-happy-11.qoi"),
-//     include_bytes!("../img/eyebg-l-surprise-11.qoi"),
-//     // include_bytes!("../img/eyebg-l-sad-11.qoi"),
-//     // include_bytes!("../img/eyebg-l-curious-11.qoi"),
-//     // include_bytes!("../img/eyebg-l-skeptical-11.qoi"),
+//     include_bytes!("../img/eyebg-left-neutral.qoi"),
+//     // include_bytes!("../img/eyebg-left-happy.qoi"),
+//     include_bytes!("../img/eyebg-left-surprise.qoi"),
+//     // include_bytes!("../img/eyebg-left-sad.qoi"),
+//     // include_bytes!("../img/eyebg-left-curious.qoi"),
+//     // include_bytes!("../img/eyebg-left-skeptical.qoi"),
 // ];
 
 // static ALL_EYEBGS_RIGHT: [&[u8]; EmotionExpression::MaxCount as usize] = [
-//     include_bytes!("../img/eyebg-r-neutral-11.qoi"),
-//     // include_bytes!("../img/eyebg-r-happy-11.qoi"),
-//     include_bytes!("../img/eyebg-r-surprise-11.qoi"),
-//     // include_bytes!("../img/eyebg-r-sad-11.qoi"),
-//     // include_bytes!("../img/eyebg-r-curious-11.qoi"),
-//     // include_bytes!("../img/eyebg-r-skeptical-11.qoi"),
+//     include_bytes!("../img/eyebg-right-neutral.qoi"),
+//     // include_bytes!("../img/eyebg-right-happy.qoi"),
+//     include_bytes!("../img/eyebg-right-surprise.qoi"),
+//     // include_bytes!("../img/eyebg-right-sad.qoi"),
+//     // include_bytes!("../img/eyebg-right-curious.qoi"),
+//     // include_bytes!("../img/eyebg-right-skeptical.qoi"),
 // ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Format)]
@@ -172,8 +173,8 @@ enum SvgFileId {
     SvgFileIdCount
 }
 
-import_svg_paths!(EyeLeft, "img/eyestack-left.svg");
-import_svg_paths!(EyeRight, "img/eyestack-right.svg");
+import_svg_paths!(EyeLeft, "img/eyestack-left-gen.svg");
+import_svg_paths!(EyeRight, "img/eyestack-right-gen.svg");
 
 type RealDisplayType<T>=lcd_async::Display<SpiInterface<SpiDevice<'static, NoopRawMutex, Spi<'static, T, embassy_rp::spi::Async>, Output<'static>>, Output<'static>>, ST7789, Output<'static>>;
 
@@ -463,6 +464,9 @@ async fn main(spawner: Spawner) {
 
         if old_mode_a_val != mode_a_val  {
             info!("mode_a old: {} new: {}", old_mode_a_val, mode_a_val);
+            if mode_a_val == TestModeA::PurpleSweep {
+                emotion_val = EmotionExpression::Surprise;
+            }
             iris_dirty = true;
             bg_dirty = true;
             old_mode_a_val = mode_a_val;
@@ -702,6 +706,8 @@ fn draw_background_shapes(is_left: bool, gaze_dir: GazeDirection, emotion: Emoti
         .stroke_color(Rgb565::BLACK)
         .build();
         
+    //todo!("draw bg image if any");
+
     { // just set a background color
         let mut raw_fb =
             RawFrameBuf::<Rgb565, &mut [u8]>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
@@ -727,7 +733,7 @@ fn draw_background_shapes(is_left: bool, gaze_dir: GazeDirection, emotion: Emoti
 }
 
 
-fn draw_inner_eye_shapes(is_left:bool, cur_gaze_dir: GazeDirection, emotion: EmotionExpression, iris_color: Rgb565, frame_buf: &mut FullFrameBuf) {
+fn draw_inner_eye_shapes(is_left:bool, cur_gaze_dir: GazeDirection, _emotion: EmotionExpression, iris_color: Rgb565, frame_buf: &mut FullFrameBuf) {
     static RUN_COUNT:AtomicUsize = AtomicUsize::new(0);
     static TOTAL_ELAPSED_MICROS:AtomicUsize = AtomicUsize::new(0);
     let start_micros = Instant::now().as_micros();
@@ -784,7 +790,7 @@ fn draw_inner_eye_shapes(is_left:bool, cur_gaze_dir: GazeDirection, emotion: Emo
 /**
  * Draw shapes that overlay the eyeball (sclera and all) after drawing the iris etc
  */
-fn draw_eyeball_overlay_shapes(is_left:bool, gaze_dir: GazeDirection, _emotion:EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) {
+fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) {
     let start_micros = Instant::now().as_micros();
     let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
 
