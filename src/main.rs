@@ -24,6 +24,7 @@ use embassy_time::{Delay, Instant, Timer};
 
 use embedded_graphics::{
     prelude::*,
+    image::Image,
     pixelcolor::{raw::RawU16, Rgb565}, 
     primitives::{Polyline, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle}
 };
@@ -40,7 +41,7 @@ use lcd_async::{
     Builder,
 };
 
-// use tinyqoi::Qoi;
+use tinyqoi::Qoi;
 use num_enum::TryFromPrimitive;
 
 // example/src/main.rs
@@ -70,6 +71,7 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
 
 const DISPLAY_FREQ: u32 = 64_000_000;
 
+const ORIGIN_POINT:Point = Point::new(0, 0);
 const DISPLAY_WIDTH: u16 =  320; 
 const DISPLAY_HEIGHT: u16 = 240; 
 const PIXEL_SIZE: u16 = 2; // RGB565 = 2 bytes per pixel
@@ -121,6 +123,7 @@ const IRIS_PALETTE_PURPLE: [Rgb565; 8] = [
 ];
 
 
+
 #[link_section = ".core1_stack"]
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 
@@ -147,23 +150,17 @@ static EYE_DATA_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::
 static RIGHT_EYE_DONE_SIGNAL: Signal<CriticalSectionRawMutex, usize> = Signal::new();
 
 
-// static ALL_EYEBGS_LEFT: [&[u8]; EmotionExpression::MaxCount as usize] = [
-//     include_bytes!("../img/eyebg-left-neutral.qoi"),
-//     // include_bytes!("../img/eyebg-left-happy.qoi"),
-//     include_bytes!("../img/eyebg-left-surprise.qoi"),
-//     // include_bytes!("../img/eyebg-left-sad.qoi"),
-//     // include_bytes!("../img/eyebg-left-curious.qoi"),
-//     // include_bytes!("../img/eyebg-left-skeptical.qoi"),
-// ];
+const fn get_emotion_bg_bytes(emotion: EmotionExpression, is_left: bool) -> Option<&'static [u8]> {
+    match (is_left, emotion) {
+        (true, EmotionExpression::Neutral) => Some(include_bytes!("../img/eyebg-left-neutral.qoi")),
+        (false, EmotionExpression::Neutral) => Some(include_bytes!("../img/eyebg-right-neutral.qoi")),
+        (true, EmotionExpression::Surprise) => Some(include_bytes!("../img/eyebg-left-surprise.qoi")),
+        (false, EmotionExpression::Surprise) => Some(include_bytes!("../img/eyebg-right-surprise.qoi")),
+        _ => None
+    }
+}
 
-// static ALL_EYEBGS_RIGHT: [&[u8]; EmotionExpression::MaxCount as usize] = [
-//     include_bytes!("../img/eyebg-right-neutral.qoi"),
-//     // include_bytes!("../img/eyebg-right-happy.qoi"),
-//     include_bytes!("../img/eyebg-right-surprise.qoi"),
-//     // include_bytes!("../img/eyebg-right-sad.qoi"),
-//     // include_bytes!("../img/eyebg-right-curious.qoi"),
-//     // include_bytes!("../img/eyebg-right-skeptical.qoi"),
-// ];
+
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Format)]
 #[repr(u32)]
@@ -218,15 +215,15 @@ fn hex_to_rgb565(hex_color: u32) -> Rgb565 {
     Rgb565::from(RawU16::new(rgb565_value))
 }
 
-// fn render_one_bg_image<T>(
-//     frame_buf: &mut FullFrameBuf, 
-//     bg_img: &Image<'_, T>) 
-//     where T: ImageDrawable,  Rgb565: From<<T as embedded_graphics::image::ImageDrawable>::Color>
-// {       
-//     let mut raw_fb =
-//         RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
-//     bg_img.draw(&mut raw_fb.color_converted()).unwrap(); 
-// }
+fn render_one_bg_image<T>(
+    frame_buf: &mut FullFrameBuf, 
+    bg_img: &embedded_graphics::image::Image<'_, T>) 
+    where T: ImageDrawable,  Rgb565: From<<T as embedded_graphics::image::ImageDrawable>::Color>
+{      
+    let mut raw_fb =
+        RawFrameBuf::<Rgb565, _>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
+    bg_img.draw(&mut raw_fb.color_converted()).unwrap(); 
+}
 
 /// Lookup the preloaded ClosedPolygon and then draw it into the buffer with the style provided.
 fn draw_closed_poly(frame_buf: &mut FullFrameBuf, file_id: SvgFileId, path_id: &str, style: &PrimitiveStyle<Rgb565>) {
@@ -557,13 +554,8 @@ where T: embassy_rp::spi::Instance
         else {
             DISPLAY1_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES])
         };
-
-    // let mut cur_eyebg_qoi = {
-    //     if is_left { Qoi::new(ALL_EYEBGS_LEFT[EmotionExpression::Neutral11 as usize]).unwrap() }
-    //     else {Qoi::new(ALL_EYEBGS_RIGHT[EmotionExpression::Neutral11 as usize]).unwrap() }
-    // };
-
-    // let mut eyebg_img =  Image::new(&cur_eyebg_qoi, Point::new(0,0));
+    
+    let mut cur_eyebg_qoi: Option<Qoi> = None;
     let mut display_dirty = true;
 
     let mut eye_ready_sub = EYE_DATA_READY_CHANNEL.subscriber().unwrap();
@@ -602,15 +594,11 @@ where T: embassy_rp::spi::Instance
         let skin_color: Rgb565 = Rgb565::CSS_DARK_OLIVE_GREEN; //TODO more dynamic colors
 
         if emotion_val != last_emotion_val {
-            // cur_eyebg_qoi = 
-            //     if is_left {
-            //         Qoi::new(ALL_EYEBGS_LEFT[emotion_val as usize]).unwrap()
-            //     } 
-            //     else {
-            //         Qoi::new(ALL_EYEBGS_RIGHT[emotion_val as usize]).unwrap()
-            //     };
+            if let Some(src_bytes) = get_emotion_bg_bytes(emotion_val, is_left) {
+                cur_eyebg_qoi = Qoi::new(src_bytes).ok();
+            } else { cur_eyebg_qoi = None; }
 
-            // eyebg_img = Image::new(&cur_eyebg_qoi, Point::new(0,0));
+            //bg_dirty = true; // TODO this should already have been calculated in CUR_BG_DIRTY?
             last_emotion_val = emotion_val;
         }
 
@@ -636,8 +624,17 @@ where T: embassy_rp::spi::Instance
         */
 
         if bg_dirty || display_dirty  {
-            // TODO eliminate rasterized background image?
-            // render_one_bg_image(disp_frame_buf, &eyebg_img);
+            if let Some(ref qoi) = cur_eyebg_qoi {
+                // recreating the Image drawable each time has low overhead
+                let bg_img = Image::new(qoi, ORIGIN_POINT);
+                render_one_bg_image(disp_frame_buf, &bg_img);
+            }
+            else { // just set a background color
+                let mut raw_fb =
+                    RawFrameBuf::<Rgb565, &mut [u8]>::new(disp_frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
+                let _ = raw_fb.clear(skin_color); 
+            }
+
             draw_background_shapes(is_left, cur_gaze_dir, emotion_val, skin_color, disp_frame_buf);
             display_dirty = true;
         }
@@ -706,13 +703,6 @@ fn draw_background_shapes(is_left: bool, gaze_dir: GazeDirection, emotion: Emoti
         .stroke_color(Rgb565::BLACK)
         .build();
         
-    //todo!("draw bg image if any");
-
-    { // just set a background color
-        let mut raw_fb =
-            RawFrameBuf::<Rgb565, &mut [u8]>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
-        let _ = raw_fb.clear(skin_color); //hex_to_rgb565(0x646464));
-    }
 
     if is_left {
         draw_closed_poly(frame_buf, file_id, "bg_ellipse01", &test_ellipse_style);
