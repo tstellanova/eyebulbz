@@ -3,7 +3,8 @@
 
 use {defmt_rtt as _, panic_probe as _};
 
-use defmt::*;
+use defmt::{info, warn, error, Format, unwrap};
+// use embassy_rp::pio_programs::rotary_encoder::Direction;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embedded_graphics::primitives::StrokeAlignment;
@@ -44,9 +45,14 @@ use lcd_async::{
 use tinyqoi::Qoi;
 use num_enum::TryFromPrimitive;
 
+
 // example/src/main.rs
 use closed_svg_path_proc::import_svg_paths;
-use closed_svg_path::{ClosedPolygon,ScanlineIntersections,GazeDirection};
+use closed_svg_path::{ClosedPolygon,ScanlineIntersections};
+
+// TODO move eyemodelz into a separate lib crate?
+mod eyemodelz;
+use crate::eyemodelz::*;
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -69,7 +75,10 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
 ];
 
 
-const DISPLAY_FREQ: u32 = 64_000_000;
+// const DISPLAY_FREQ_BASE: u32 = 60_000_000;
+// const DISPLAY_FREQ_MAX: u32 = 80_000_000;
+// const DISPLAY_FREQ: u32 = (DISPLAY_FREQ_MAX - DISPLAY_FREQ_BASE)/2 + DISPLAY_FREQ_BASE;
+const DISPLAY_FREQ: u32 = 72_000_000; //apparently the fastest we can drive with short wire lengths
 
 const ORIGIN_POINT:Point = Point::new(0, 0);
 const DISPLAY_WIDTH: u16 =  320; 
@@ -82,33 +91,15 @@ type FullFrameBuf = [u8; FRAME_SIZE_BYTES];
 #[repr(u8)]
 enum TestModeA {
     Staring = 0,
-    BackAndForth = 1,
-    PurpleSweep = 2,
+    NeutralSweep = 1,
+    SurpriseSweep = 2,
     Randomize = 3,
     MaxCount
 }
 
-const INTERFRAME_DELAY_MILLIS:usize = 240;
+const INTERFRAME_DELAY_MILLIS:usize = 120;
 
-// Look direction is a 3x3 grid, with row-col, 00 is northwest, 22 is southeast, 11 is straight ahead
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Format)]
-#[repr(u8)]
-enum EmotionExpression {
-    Neutral, // no strong expression
-    // Happy = 9,
-    Surprise,
-    // Curious 
-    // Skeptical
-    // Thoughtful
-    // Confused
-    // Shy
-    // Love
-    // Trepidation 
-    MaxCount
-}
-
-const MAX_MODE_B_VAL: u8 = GazeDirection::MaxCount as u8;
+const MAX_MODE_B_COUNT: u8 = NUM_GAZE_SWEEP_STEPS;
 
 const IRIS_PALETTE_PURPLE: [Rgb565; 8] = [ 
     Rgb565::CSS_INDIGO, 
@@ -225,6 +216,22 @@ fn render_one_bg_image<T>(
     bg_img.draw(&mut raw_fb.color_converted()).unwrap(); 
 }
 
+/// Draw the asset defined by the id, gaze direction, and step.
+/// This assumes that stepped gaze transitions always begin at GazeDirection::StraightAhead
+/// and end at the provided gaze_direction. In order to perform a reverse transition
+/// (from gaze_direction to StraightAhead), you need to recalculate look_step appropriately.
+fn draw_stepped_asset(frame_buf: &mut FullFrameBuf, 
+    file_id: SvgFileId, 
+    id_prefix: &str, 
+    gaze_direction: GazeDirection,
+    look_step_idx: u8, 
+    style: &PrimitiveStyle<Rgb565>) 
+{
+    let asset_id = stepped_asset_name(id_prefix, gaze_direction, look_step_idx);
+    // info!("draw: {} {} {} > {}", id_prefix, gaze_direction, look_step_idx, &asset_id.as_str());
+    draw_closed_poly(frame_buf, file_id, &asset_id, style);
+}
+
 /// Lookup the preloaded ClosedPolygon and then draw it into the buffer with the style provided.
 fn draw_closed_poly(frame_buf: &mut FullFrameBuf, file_id: SvgFileId, path_id: &str, style: &PrimitiveStyle<Rgb565>) {
     if let Some(cpoly) = get_svg_path_by_id_checked(file_id,path_id) {
@@ -266,58 +273,24 @@ async fn mode_b_button_task(mut pin: Input<'static>) {
 
         if pin.is_low() {
             let mut mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
-            mode_b_val = (mode_b_val + 1) % MAX_MODE_B_VAL;
+            mode_b_val = (mode_b_val + 1) % MAX_MODE_B_COUNT;
             MODE_B_VALUE.store(mode_b_val, Ordering::Relaxed);
         }
     }
 }
 
 
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // let mut pac = rp235x_pac::Peripherals::take().unwrap();
     let p = embassy_rp::init(Default::default());
-    let total_fbuf_size = 2*FRAME_SIZE_BYTES ; //+ INNER_EYE_FBUF_SIZE_BYTES;
+    let total_fbuf_size = 2*FRAME_SIZE_BYTES ;
     info!("Start Config total_fbuf_size = {}",total_fbuf_size);
-
-    let all_left_poly_refs = [
-       &SVG_FILE_EyeRight_PATH_0_POLYGON,
-       &SVG_FILE_EyeRight_PATH_1_POLYGON,
-        &SVG_FILE_EyeRight_PATH_2_POLYGON,
-        &SVG_FILE_EyeRight_PATH_3_POLYGON,
-        &SVG_FILE_EyeRight_PATH_4_POLYGON,
-        &SVG_FILE_EyeRight_PATH_5_POLYGON,
-        &SVG_FILE_EyeRight_PATH_6_POLYGON,
-        &SVG_FILE_EyeRight_PATH_7_POLYGON,
-        &SVG_FILE_EyeRight_PATH_8_POLYGON,
-        &SVG_FILE_EyeRight_PATH_9_POLYGON,
-        &SVG_FILE_EyeRight_PATH_10_POLYGON,
-        &SVG_FILE_EyeRight_PATH_11_POLYGON,
-        &SVG_FILE_EyeRight_PATH_12_POLYGON,
-        &SVG_FILE_EyeRight_PATH_13_POLYGON,
-        &SVG_FILE_EyeRight_PATH_14_POLYGON,
-        &SVG_FILE_EyeRight_PATH_15_POLYGON,
-        &SVG_FILE_EyeRight_PATH_16_POLYGON,
-        &SVG_FILE_EyeRight_PATH_17_POLYGON,
-        &SVG_FILE_EyeRight_PATH_18_POLYGON,
-        &SVG_FILE_EyeRight_PATH_19_POLYGON,
-        &SVG_FILE_EyeRight_PATH_20_POLYGON,
-        &SVG_FILE_EyeRight_PATH_21_POLYGON,
-    ];
-
-    {
-        let mut total_size: usize = 0;
-        for poly in all_left_poly_refs {
-            total_size += poly.total_size();
-        }
-        total_size *= 2; //double for left+right eye
-        info!("total rom polys size: {}",total_size);
-    }
-    
 
     // Read MSP at runtime
     let sp: u32 = cortex_m::register::msp::read();
-    info!("Main MSP (Core0) = {:#010X}", sp);
+    info!("Core0 main MSP  = {:#010x}", sp);
 
     // prep for reading mode change events
     MODE_A_VALUE.store(TestModeA::Staring as u8, Ordering::Relaxed);
@@ -361,7 +334,7 @@ async fn main(spawner: Spawner) {
     display_config.frequency = DISPLAY_FREQ;
     display_config.phase = spi::Phase::CaptureOnSecondTransition;
     display_config.polarity = spi::Polarity::IdleHigh;
-
+    warn!("display_freq: {}",DISPLAY_FREQ);
 
     let spi0: Spi<'_, embassy_rp::peripherals::SPI0, Async> = 
         Spi::new_txonly(p.SPI0, sck0, sda0, p.DMA_CH0, display_config.clone());
@@ -407,6 +380,8 @@ async fn main(spawner: Spawner) {
 
     let eye_redraw_data_ready_pub = EYE_DATA_READY_CHANNEL.publisher().unwrap();
 
+    let mut look_step_idx = 0;
+
     // Main drawing loop, runs forever
     loop {
         led.set_high();
@@ -414,57 +389,53 @@ async fn main(spawner: Spawner) {
         let mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
         let mut brightness_percent = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
 
-        let mut look_step = (main_loop_count % 3).try_into().unwrap();
+        let mut animation_step:u8 = (main_loop_count % NUM_GAZE_SWEEP_STEPS as usize).try_into().unwrap();
         let mut frame_render_gap_millis = INTERFRAME_DELAY_MILLIS;
 
         let mut iris_color: Rgb565 = Rgb565::CSS_MAGENTA ;
-        
+        let mut force_gaze_dir = false;
+
         match mode_a_val {
             TestModeA::Staring => { 
-                look_step = 0;
+                emotion_val = EmotionExpression::Neutral;
                 brightness_percent = 100;
                 brightness_ascending = false;
                 frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
             },
-            TestModeA::BackAndForth => { 
+            TestModeA::NeutralSweep => { 
+                emotion_val = EmotionExpression::Neutral;
                 iris_color = Rgb565::CSS_MEDIUM_TURQUOISE ;
             },
-            TestModeA::PurpleSweep => {
+            TestModeA::SurpriseSweep => {
+                emotion_val = EmotionExpression::Surprise;
                 brightness_percent = 50;
                 brightness_ascending = true;
                 iris_dirty = true;
                 let color_idx = main_loop_count % IRIS_PALETTE_PURPLE.len();
-                iris_color = IRIS_PALETTE_PURPLE[color_idx]  
+                iris_color = IRIS_PALETTE_PURPLE[color_idx] ;
             },
             _ => {
+                emotion_val = EmotionExpression::Neutral;
                 frame_render_gap_millis = INTERFRAME_DELAY_MILLIS / 2;
                 let mut rng_bytes:[u8;4] = [0; 4];
                 rnd_src.fill_bytes(&mut rng_bytes);
-                look_step = ( rng_bytes[3] % 3).try_into().unwrap();
+                look_step_idx = ( rng_bytes[3] % NUM_LOOK_STEPS).try_into().unwrap();
+                force_gaze_dir = true;
                 iris_dirty = true;
                 iris_color = Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2])
             }
         }
     
-        let mut force_switch_gaze_dir = false;
-        if mode_a_val == TestModeA::BackAndForth || mode_a_val == TestModeA::Randomize {
+        if mode_a_val == TestModeA::NeutralSweep || mode_a_val == TestModeA::SurpriseSweep {
             // flip loop direction back and forth
-            cur_gaze_dir = match cur_gaze_dir  {
-                GazeDirection::West=>{GazeDirection::StraightAhead}
-                GazeDirection::StraightAhead=>{GazeDirection::East}
-                GazeDirection::East => {GazeDirection::West}
-                _=> {GazeDirection::StraightAhead}
-            };
-            force_switch_gaze_dir = true;
+            (cur_gaze_dir, look_step_idx) = gaze_and_look_for_sweep_index(animation_step);
+            //info!("new m_a gaze_dir: {} look_step: {}", cur_gaze_dir, look_step_idx);
+            force_gaze_dir = true;
             iris_dirty = true;
         }
 
         if old_mode_a_val != mode_a_val  {
             info!("mode_a old: {} new: {}", old_mode_a_val, mode_a_val);
-            if mode_a_val == TestModeA::PurpleSweep {
-                emotion_val = EmotionExpression::Surprise;
-            }
-            else { emotion_val = EmotionExpression::Neutral;}
             iris_dirty = true;
             bg_dirty = true;
             old_mode_a_val = mode_a_val;
@@ -472,17 +443,14 @@ async fn main(spawner: Spawner) {
 
         if old_mode_b_val != mode_b_val {
             info!("mode_b old: {} new: {}", old_mode_b_val, mode_b_val);
-            iris_dirty = true;
-            // TODO as the meaning of mode_b button changes, bg_dirty may or may not be true
-            // bg_dirty = true; // emotion has changed, likely background changes with that
-            old_mode_b_val = mode_b_val;
-            if !force_switch_gaze_dir {
-                // update normally
-               const AVAIL_GAZE_DIRS: [GazeDirection; 3] = [GazeDirection::West, GazeDirection::StraightAhead, GazeDirection::East];
-               let dumb_idx = mode_b_val as usize % AVAIL_GAZE_DIRS.len();
-               cur_gaze_dir = AVAIL_GAZE_DIRS[dumb_idx];
-            // cur_gaze_dir =  mode_b_val.try_into().unwrap();/
+            if !force_gaze_dir {
+                // update gaze direction and step based on mode_b_val
+                animation_step = mode_b_val % NUM_GAZE_SWEEP_STEPS;
+                (cur_gaze_dir, look_step_idx) = gaze_and_look_for_sweep_index(animation_step);
+                warn!("new m_b {} gaze_dr: {} look_step: {}", mode_b_val, cur_gaze_dir, look_step_idx);
+                iris_dirty = true;
             }
+            old_mode_b_val = mode_b_val;
         }
 
         // 5000/480 = steps per ten seconds
@@ -512,10 +480,10 @@ async fn main(spawner: Spawner) {
         }
 
         // ship all the redraw config values
-        // info!("emotion_val: {}", emotion_val);
+        // info!("emote: {} gaze: {} look_step: {}", emotion_val, cur_gaze_dir, look_step_idx);
         CUR_GAZE_DIR.store(cur_gaze_dir as u8, Ordering::Relaxed);
         CUR_EMOTION.store(emotion_val as u8, Ordering::Relaxed);
-        CUR_LOOK_STEP.store(look_step, Ordering::Relaxed);
+        CUR_LOOK_STEP.store(look_step_idx, Ordering::Relaxed);
         CUR_IRIS_COLOR.store(iris_color.into_storage(), Ordering::Relaxed);
         CUR_IRIS_DIRTY.store(iris_dirty, Ordering::Relaxed);
         CUR_BG_DIRTY.store(bg_dirty, Ordering::Relaxed);
@@ -531,6 +499,8 @@ async fn main(spawner: Spawner) {
 
         // give some time to inter-task stuff
         Timer::after_millis(frame_render_gap_millis.try_into().unwrap()).await;
+        // wait_for
+        RIGHT_EYE_DONE_SIGNAL.wait().await;
 
         iris_dirty = false;
         bg_dirty = false;
@@ -544,7 +514,6 @@ async fn main(spawner: Spawner) {
  */
 async fn redraw_loop<T>(is_left: bool, mut backlight_pwm_out:   Pwm<'static>, mut display: RealDisplayType<T>) 
 where T: embassy_rp::spi::Instance
-
 {
     backlight_pwm_out.set_duty_cycle_percent(25).unwrap();
 
@@ -569,15 +538,16 @@ where T: embassy_rp::spi::Instance
         // sync on eye parameters data ready
         let eye_ready_msg:embassy_sync::pubsub::WaitResult<usize> = eye_ready_sub.next_message().await; 
         match eye_ready_msg {
-             embassy_sync::pubsub::WaitResult::Lagged(missed_count) => {
+            embassy_sync::pubsub::WaitResult::Lagged(missed_count) => {
                 warn!("Missed {} syncs", missed_count);
-             },
-            embassy_sync::pubsub::WaitResult:: Message(redraw_sync_count) => {
-                //info!("redraw_sync_count {} ", redraw_sync_count);
-                if (redraw_loop_count+1) != redraw_sync_count {
-                    warn!("loop_count {} redraw_sync_count {}", redraw_loop_count, redraw_sync_count);
-                }
-             }
+            },
+            _ => {}
+            // embassy_sync::pubsub::WaitResult:: Message(redraw_sync_count) => {
+            //     //info!("redraw_sync_count {} ", redraw_sync_count);
+            //     if (redraw_loop_count+1) != redraw_sync_count {
+            //         warn!("loop_count {} redraw_sync_count {}", redraw_loop_count, redraw_sync_count);
+            //     }
+            //  }
         }
         let loop_start_micros = Instant::now().as_micros();
 
@@ -586,7 +556,7 @@ where T: embassy_rp::spi::Instance
         let brightness_percent: u8 = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
         let emotion_val: EmotionExpression = CUR_EMOTION.load(Ordering::Relaxed).try_into().unwrap();
         let cur_gaze_dir: GazeDirection = CUR_GAZE_DIR.load(Ordering::Relaxed).try_into().unwrap();
-        let _look_step: u8 = CUR_LOOK_STEP.load(Ordering::Relaxed);
+        let look_step: u8 = CUR_LOOK_STEP.load(Ordering::Relaxed);
 
         backlight_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
 
@@ -647,7 +617,7 @@ where T: embassy_rp::spi::Instance
         }
 
         if iris_dirty || display_dirty  {
-            draw_inner_eye_shapes(is_left, cur_gaze_dir, emotion_val, iris_color, disp_frame_buf);
+            draw_inner_eye_shapes(is_left, cur_gaze_dir, emotion_val, look_step, iris_color, disp_frame_buf);
             draw_eyeball_overlay_shapes(is_left, cur_gaze_dir, emotion_val, skin_color, disp_frame_buf);
             display_dirty = true;
         }
@@ -665,13 +635,13 @@ where T: embassy_rp::spi::Instance
 
         redraw_loop_count += 1;
         // synchronize left and right eye drawing
-        if is_left {
-            let right_eye_loop_count = RIGHT_EYE_DONE_SIGNAL.wait().await;
-            if right_eye_loop_count != redraw_loop_count {
-                warn!("loop_count left {} != right {}",redraw_loop_count, right_eye_loop_count);
-            }
-        }
-        else {
+        // if is_left {
+        //     let right_eye_loop_count = RIGHT_EYE_DONE_SIGNAL.wait().await;
+        //     if right_eye_loop_count != redraw_loop_count {
+        //         warn!("loop_count left {} != right {}",redraw_loop_count, right_eye_loop_count);
+        //     }
+        // }
+        if !is_left {
             // right eye is done drawing to screen -- notify folks waiting on this
             RIGHT_EYE_DONE_SIGNAL.signal(redraw_loop_count);
         }
@@ -687,7 +657,23 @@ where T: embassy_rp::spi::Instance
 }
 
 
-fn draw_background_shapes(is_left: bool, gaze_dir: GazeDirection, emotion: EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) 
+fn color_saturation_down(color: Rgb565, rsub: u8, bsub: u8, gsub:u8 ) -> Rgb565 {
+    let  r = color.r().saturating_sub(rsub);
+    let  g = color.g().saturating_sub(gsub); 
+    let  b = color.b().saturating_sub(bsub);
+    // this new method should handle the 5,6,5 mapping
+    Rgb565::new(r, g, b)
+}
+
+fn color_saturation_up(color: Rgb565, radd: u8, badd: u8, gadd:u8 ) -> Rgb565 {
+    let  r = color.r().saturating_add(radd);
+    let  g = color.g().saturating_add(gadd); 
+    let  b = color.b().saturating_add(badd);
+    // this new method should handle the 5,6,5 mapping
+    Rgb565::new(r, g, b)
+}
+
+fn draw_background_shapes(is_left: bool, _gaze_dir: GazeDirection, _emotion: EmotionExpression, _skin_color:Rgb565, frame_buf: &mut FullFrameBuf) 
 {
     let start_micros = Instant::now().as_micros();
     let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
@@ -718,7 +704,10 @@ fn draw_background_shapes(is_left: bool, gaze_dir: GazeDirection, emotion: Emoti
 }
 
 
-fn draw_inner_eye_shapes(is_left:bool, cur_gaze_dir: GazeDirection, _emotion: EmotionExpression, iris_color: Rgb565, frame_buf: &mut FullFrameBuf) {
+
+fn draw_inner_eye_shapes(is_left:bool, end_gaze_dir: GazeDirection, _emotion: EmotionExpression, look_step: u8, 
+    iris_color: Rgb565, frame_buf: &mut FullFrameBuf) 
+{
     static RUN_COUNT:AtomicUsize = AtomicUsize::new(0);
     static TOTAL_ELAPSED_MICROS:AtomicUsize = AtomicUsize::new(0);
     let start_micros = Instant::now().as_micros();
@@ -733,30 +722,12 @@ fn draw_inner_eye_shapes(is_left:bool, cur_gaze_dir: GazeDirection, _emotion: Em
         
     // In our model, the sclera never changes. Other things draw over this.
     draw_closed_poly(frame_buf, file_id, "sclera", &PrimitiveStyle::with_fill(hex_to_rgb565(0xf4eed7)));
-
-    match cur_gaze_dir {
-        GazeDirection::West => {
-            draw_closed_poly(frame_buf, file_id, "iris_10", &iris_style);
-            draw_closed_poly(frame_buf, file_id, "iris_shadow_top_10", &PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
-            draw_closed_poly(frame_buf, file_id, "pupil_10", &PrimitiveStyle::with_fill(Rgb565::BLACK));
-            draw_closed_poly(frame_buf, file_id, "glint_lg_10",&PrimitiveStyle::with_fill(Rgb565::WHITE));
-            draw_closed_poly(frame_buf, file_id, "glint_sm_10", &PrimitiveStyle::with_fill(Rgb565::WHITE));
-        },
-        GazeDirection::East => {
-            draw_closed_poly(frame_buf, file_id, "iris_12", &iris_style);
-            draw_closed_poly(frame_buf, file_id, "iris_shadow_top_12", &PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
-            draw_closed_poly(frame_buf, file_id, "pupil_12", &PrimitiveStyle::with_fill(Rgb565::BLACK));
-            draw_closed_poly(frame_buf, file_id, "glint_lg_12",&PrimitiveStyle::with_fill(Rgb565::WHITE));
-            draw_closed_poly(frame_buf, file_id, "glint_sm_12", &PrimitiveStyle::with_fill(Rgb565::WHITE));
-        },
-        _ =>{ // Handle as StraightAhead
-            draw_closed_poly(frame_buf, file_id, "iris_11", &iris_style);
-            draw_closed_poly(frame_buf, file_id, "iris_shadow_top_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
-            draw_closed_poly(frame_buf, file_id, "pupil_11", &PrimitiveStyle::with_fill(Rgb565::BLACK));
-            draw_closed_poly(frame_buf, file_id, "glint_lg_11",&PrimitiveStyle::with_fill(Rgb565::WHITE));
-            draw_closed_poly(frame_buf, file_id, "glint_sm_11", &PrimitiveStyle::with_fill(Rgb565::WHITE));
-        },
-    };
+    
+    draw_stepped_asset(frame_buf, file_id, "iris", end_gaze_dir, look_step, &iris_style);
+    draw_stepped_asset(frame_buf, file_id, "iris_shadow_top", end_gaze_dir, look_step, &PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
+    draw_stepped_asset(frame_buf, file_id, "pupil", end_gaze_dir, look_step, &PrimitiveStyle::with_fill(Rgb565::BLACK));
+    draw_stepped_asset(frame_buf, file_id, "glint_lg", end_gaze_dir, look_step, &PrimitiveStyle::with_fill(Rgb565::WHITE));
+    draw_stepped_asset(frame_buf, file_id, "glint_sm", end_gaze_dir, look_step, &PrimitiveStyle::with_fill(Rgb565::WHITE));
 
     let _elapsed_micros:usize = (Instant::now().as_micros() - start_micros).try_into().unwrap();
     let total_elapsed = TOTAL_ELAPSED_MICROS.fetch_add(_elapsed_micros, Ordering::Relaxed);
@@ -780,9 +751,11 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
     let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
 
     //TODO get the style info from the SVG file itself at build time?
+    let slightly_brighter_skin = color_saturation_up(skin_color, 5, 10, 5);
+    let slightly_darker_skin = color_saturation_down(skin_color, 5, 10, 5);
 
     let upper_lid_top_style = PrimitiveStyleBuilder::new()
-        .fill_color(skin_color)
+        .fill_color(slightly_brighter_skin)
         .stroke_color(Rgb565::CSS_BLACK)
         .stroke_width(1)
         .stroke_alignment(StrokeAlignment::Center)
@@ -800,7 +773,7 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
         .build();
 
     let lower_lid_style = PrimitiveStyleBuilder::new()
-        .fill_color(skin_color)
+        .fill_color(slightly_darker_skin)
         .stroke_color(Rgb565::CSS_BLACK)
         .stroke_width(1)
         .stroke_alignment(StrokeAlignment::Center)
@@ -822,11 +795,12 @@ async fn core0_drawing_task(
     cs_peri: Spi0CsnType , 
     rst_out: Output<'static>,
     dcx_out: Output<'static>,
-    backlight_pwm_out: Pwm<'static> ) {
+    backlight_pwm_out: Pwm<'static> ) 
+{
 
     // Read MSP at runtime
     let sp: u32 = cortex_m::register::msp::read();
-    info!("Core0 MSP = {:#010X}", sp);
+    info!("Core0 draw MSP = {:#010x}", sp);
 
     // Create shared SPI1 bus from raw Spi
     static SPI_BUS: StaticCell<Mutex<NoopRawMutex, Spi<'static, SPI0, Async>>> = StaticCell::new();
@@ -855,11 +829,12 @@ async fn core1_drawing_task(
     cs_peri: Spi1CsnType , 
     rst_out: Output<'static>,
     dcx_out: Output<'static>,
-    backlight_pwm_out: Pwm<'static> ) {
+    backlight_pwm_out: Pwm<'static> ) 
+{
 
     // Read MSP at runtime
     let sp: u32 = cortex_m::register::msp::read();
-    info!("Core1 MSP = {:#010X}", sp);
+    info!("Core1 draw MSP = {:#010x}", sp);
 
     // Create shared SPI1 bus from raw Spi
     static SPI_BUS: StaticCell<Mutex<NoopRawMutex, Spi<'static, SPI1, Async>>> = StaticCell::new();

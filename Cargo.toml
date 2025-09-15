@@ -26,6 +26,7 @@ tinyqoi = "0.2.0"
 rand = {version="0.9",default-features = false }
 static_cell = { version = "2.1.1" }
 num_enum = {version="0.7.4",default-features = false}
+heapless = { version = "0.9.1" }
 
 # closed_svg_path = { path="../eg_svg_paths_wkspc/closed_svg_path"}
 closed_svg_path = { git = "https://github.com/tstellanova/eg_svg_paths"} 
