@@ -11,7 +11,7 @@ pub const SWEEP_MIDDLE_STEP_IDX:u8 = NUM_LOOK_STEPS - 1;
 pub const LAST_LOOK_STEP_IDX: u8 = NUM_LOOK_STEPS - 1;
 
 
-pub fn gaze_and_look_for_sweep_index(sweep_idx: u8) -> (GazeDirection, u8) {
+pub fn gaze_and_look_for_hsweep_index(sweep_idx: u8) -> (GazeDirection, u8) {
     if sweep_idx > SWEEP_MIDDLE_STEP_IDX {
         (GazeDirection::East, sweep_idx - SWEEP_MIDDLE_STEP_IDX)
     }
@@ -19,6 +19,16 @@ pub fn gaze_and_look_for_sweep_index(sweep_idx: u8) -> (GazeDirection, u8) {
         (GazeDirection::West, SWEEP_MIDDLE_STEP_IDX - sweep_idx)
     }
 }
+
+pub fn gaze_and_look_for_vsweep_index(sweep_idx: u8) -> (GazeDirection, u8) {
+    if sweep_idx > SWEEP_MIDDLE_STEP_IDX {
+        (GazeDirection::South, sweep_idx - SWEEP_MIDDLE_STEP_IDX)
+    }
+    else {
+        (GazeDirection::North, SWEEP_MIDDLE_STEP_IDX - sweep_idx)
+    }
+}
+
 
 /// Trait for enums that can be converted into a single ASCII digit.
 pub trait AsDigit {
@@ -149,10 +159,14 @@ pub fn stepped_asset_name(prefix: &str, end_direction: GazeDirection, look_step:
 // Precomputed fixed-point factors for common lightness adjustments (0.9 * 256, 0.8 * 256, etc.)
 pub const FACTOR_DARKEN_10: isize = (0.9 * 256.) as isize; 
 pub const FACTOR_DARKEN_20: isize = (0.8 * 256.) as isize;
-pub const FACTOR_DARKEN_30: isize = (0.7 * 256.) as isize; // 179
+pub const FACTOR_DARKEN_30: isize = (0.7 * 256.) as isize; 
+pub const FACTOR_DARKEN_40: isize = (0.6 * 256.) as isize;
+pub const FACTOR_DARKEN_50: isize = (0.5 * 256.) as isize; 
 pub const FACTOR_BRIGHTEN_10: isize = (1.1 * 256.) as isize;
 pub const FACTOR_BRIGHTEN_20: isize = (1.2 * 256.) as isize;
 pub const FACTOR_BRIGHTEN_30: isize = (1.3 * 256.) as isize;
+pub const FACTOR_BRIGHTEN_40: isize = (1.4 * 256.) as isize;
+pub const FACTOR_BRIGHTEN_50: isize = (1.5 * 256.) as isize;
 
 /// Adjust lightness of Rgb565 color by a fixed-point factor
 /// factor: 256 = no change, <256 = darker, >256 = brighter

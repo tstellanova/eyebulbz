@@ -90,10 +90,12 @@ type FullFrameBuf = [u8; FRAME_SIZE_BYTES];
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Format)]
 #[repr(u8)]
 enum TestModeA {
-    Staring = 0,
+    StaringHStep = 0,
     NeutralSweep = 1,
     SurpriseSweep = 2,
-    Randomize = 3,
+    UpDownSweep = 3,
+    StaringVStep = 4,
+    Randomize = 5,
     MaxCount
 }
 
@@ -293,7 +295,7 @@ async fn main(spawner: Spawner) {
     info!("Core0 main MSP  = {:#010x}", sp);
 
     // prep for reading mode change events
-    MODE_A_VALUE.store(TestModeA::Staring as u8, Ordering::Relaxed);
+    MODE_A_VALUE.store(TestModeA::StaringVStep as u8, Ordering::Relaxed);
     MODE_B_VALUE.store(GazeDirection::StraightAhead as u8, Ordering::Relaxed);
 
     let mut led = Output::new(p.PIN_25, Level::High);
@@ -396,16 +398,20 @@ async fn main(spawner: Spawner) {
         let mut force_gaze_dir = false;
 
         match mode_a_val {
-            TestModeA::Staring => { 
+            TestModeA::StaringHStep => { 
                 emotion_val = EmotionExpression::Neutral;
-                brightness_percent = 100;
+                brightness_percent = 80;
                 brightness_ascending = false;
                 frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
-            },
+            }
             TestModeA::NeutralSweep => { 
                 emotion_val = EmotionExpression::Neutral;
                 iris_color = Rgb565::CSS_MEDIUM_TURQUOISE ;
-            },
+            }
+            TestModeA::UpDownSweep => {
+                emotion_val = EmotionExpression::Neutral;
+                iris_color = Rgb565::CSS_ROSY_BROWN;
+            }
             TestModeA::SurpriseSweep => {
                 emotion_val = EmotionExpression::Surprise;
                 brightness_percent = 50;
@@ -413,15 +419,24 @@ async fn main(spawner: Spawner) {
                 iris_dirty = true;
                 let color_idx = main_loop_count % IRIS_PALETTE_PURPLE.len();
                 iris_color = IRIS_PALETTE_PURPLE[color_idx] ;
-            },
+            }
+            TestModeA::StaringVStep => {
+                emotion_val = EmotionExpression::Neutral;
+                brightness_percent = 80;
+                brightness_ascending = false;
+                frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
+            }
             _ => {
                 emotion_val = EmotionExpression::Neutral;
                 frame_render_gap_millis = INTERFRAME_DELAY_MILLIS / 2;
                 let mut rng_bytes:[u8;4] = [0; 4];
                 rnd_src.fill_bytes(&mut rng_bytes);
                 iris_color = Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2]);
-                let rand_sweep_idx = rng_bytes[3] % NUM_GAZE_SWEEP_STEPS;
-                (cur_gaze_dir, look_step_idx) = gaze_and_look_for_sweep_index(rand_sweep_idx);
+                let twiddler = rng_bytes[3];
+                let rand_sweep_idx = twiddler % NUM_GAZE_SWEEP_STEPS;
+                (cur_gaze_dir, look_step_idx) = 
+                    if twiddler > 127 { gaze_and_look_for_hsweep_index(rand_sweep_idx) } 
+                    else {  gaze_and_look_for_vsweep_index(rand_sweep_idx) };
                 force_gaze_dir = true;
                 iris_dirty = true;
             }
@@ -429,8 +444,12 @@ async fn main(spawner: Spawner) {
     
         if mode_a_val == TestModeA::NeutralSweep || mode_a_val == TestModeA::SurpriseSweep {
             // flip loop direction back and forth
-            (cur_gaze_dir, look_step_idx) = gaze_and_look_for_sweep_index(animation_step);
+            (cur_gaze_dir, look_step_idx) = gaze_and_look_for_hsweep_index(animation_step);
             //info!("new m_a gaze_dir: {} look_step: {}", cur_gaze_dir, look_step_idx);
+            force_gaze_dir = true;
+            iris_dirty = true;
+        } else if mode_a_val == TestModeA::UpDownSweep {
+            (cur_gaze_dir, look_step_idx) = gaze_and_look_for_vsweep_index(animation_step);
             force_gaze_dir = true;
             iris_dirty = true;
         }
@@ -447,7 +466,11 @@ async fn main(spawner: Spawner) {
             if !force_gaze_dir {
                 // update gaze direction and step based on mode_b_val
                 animation_step = mode_b_val % NUM_GAZE_SWEEP_STEPS;
-                (cur_gaze_dir, look_step_idx) = gaze_and_look_for_sweep_index(animation_step);
+                (cur_gaze_dir, look_step_idx)  = 
+                    match mode_a_val {
+                        TestModeA::StaringVStep => { gaze_and_look_for_vsweep_index(animation_step) }
+                        _ => { gaze_and_look_for_hsweep_index(animation_step)}
+                    };
                 warn!("new m_b {} gaze_dr: {} look_step: {}", mode_b_val, cur_gaze_dir, look_step_idx);
                 iris_dirty = true;
             }
@@ -697,9 +720,10 @@ fn draw_inner_eye_shapes(is_left:bool, end_gaze_dir: GazeDirection, _emotion: Em
     let start_micros = Instant::now().as_micros();
     let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
 
+    let darker_iris_color = adjust_lightness_rgb565(iris_color, FACTOR_DARKEN_10);
     let iris_style = PrimitiveStyleBuilder::new()
         .fill_color(iris_color)
-        .stroke_color(Rgb565::CSS_BLACK)
+        .stroke_color(darker_iris_color)
         .stroke_width(1) // TODO polyline redraw with stroke width > 1 is currently very slow-- why?
         .stroke_alignment(StrokeAlignment::Center)
         .build();
@@ -708,7 +732,7 @@ fn draw_inner_eye_shapes(is_left:bool, end_gaze_dir: GazeDirection, _emotion: Em
     draw_closed_poly(frame_buf, file_id, "sclera", &PrimitiveStyle::with_fill(hex_to_rgb565(0xf4eed7)));
     
     draw_stepped_asset(frame_buf, file_id, "iris", end_gaze_dir, look_step, &iris_style);
-    draw_stepped_asset(frame_buf, file_id, "iris_shadow_top", end_gaze_dir, look_step, &PrimitiveStyle::with_fill(hex_to_rgb565(0x2f4f4f)));
+    draw_stepped_asset(frame_buf, file_id, "iris_shadow_top", end_gaze_dir, look_step, &PrimitiveStyle::with_fill(darker_iris_color));
     draw_stepped_asset(frame_buf, file_id, "pupil", end_gaze_dir, look_step, &PrimitiveStyle::with_fill(Rgb565::BLACK));
     draw_stepped_asset(frame_buf, file_id, "glint_lg", end_gaze_dir, look_step, &PrimitiveStyle::with_fill(Rgb565::WHITE));
     draw_stepped_asset(frame_buf, file_id, "glint_sm", end_gaze_dir, look_step, &PrimitiveStyle::with_fill(Rgb565::WHITE));
