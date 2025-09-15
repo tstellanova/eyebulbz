@@ -1,3 +1,4 @@
+use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
 use num_enum::TryFromPrimitive;
 use heapless::String; // fixed-capacity, no allocator, stack-based
 // use heapless::consts::*;
@@ -142,3 +143,35 @@ pub fn stepped_asset_name(prefix: &str, end_direction: GazeDirection, look_step:
     stepped_asset_name_full(prefix, GazeDirection::StraightAhead, end_direction, look_step)
 }
 
+
+
+
+// Precomputed fixed-point factors for common lightness adjustments (0.9 * 256, 0.8 * 256, etc.)
+pub const FACTOR_DARKEN_10: isize = (0.9 * 256.) as isize; 
+pub const FACTOR_DARKEN_20: isize = (0.8 * 256.) as isize;
+pub const FACTOR_DARKEN_30: isize = (0.7 * 256.) as isize; // 179
+pub const FACTOR_BRIGHTEN_10: isize = (1.1 * 256.) as isize;
+pub const FACTOR_BRIGHTEN_20: isize = (1.2 * 256.) as isize;
+pub const FACTOR_BRIGHTEN_30: isize = (1.3 * 256.) as isize;
+
+/// Adjust lightness of Rgb565 color by a fixed-point factor
+/// factor: 256 = no change, <256 = darker, >256 = brighter
+pub fn adjust_lightness_rgb565(color: Rgb565, factor: isize) -> Rgb565 {
+    // Extract RGB components (they're already u8 in Rgb565)]
+    let r = color.r() as isize;
+    let g = color.g() as isize;
+    let b = color.b() as isize;
+    
+    // Scale components using fixed-point arithmetic
+    let scaled_r = (r * factor) >> 8;
+    let scaled_g = (g * factor) >> 8;
+    let scaled_b = (b * factor) >> 8;
+    
+    // // Clamp to valid u8 ranges (Rgb565 stores as u8 internally)
+    let r_final = scaled_r.clamp(0, 0x1F) as u8;
+    let g_final = scaled_g.clamp(0, 0x3F) as u8;
+    let b_final = scaled_b.clamp(0, 0x1F) as u8;
+    
+    // Create new Rgb565 color
+    Rgb565::new(r_final, g_final, b_final)
+}

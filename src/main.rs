@@ -419,10 +419,11 @@ async fn main(spawner: Spawner) {
                 frame_render_gap_millis = INTERFRAME_DELAY_MILLIS / 2;
                 let mut rng_bytes:[u8;4] = [0; 4];
                 rnd_src.fill_bytes(&mut rng_bytes);
-                look_step_idx = ( rng_bytes[3] % NUM_LOOK_STEPS).try_into().unwrap();
+                iris_color = Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2]);
+                let rand_sweep_idx = rng_bytes[3] % NUM_GAZE_SWEEP_STEPS;
+                (cur_gaze_dir, look_step_idx) = gaze_and_look_for_sweep_index(rand_sweep_idx);
                 force_gaze_dir = true;
                 iris_dirty = true;
-                iris_color = Rgb565::new(rng_bytes[0],rng_bytes[1],rng_bytes[2])
             }
         }
     
@@ -566,7 +567,7 @@ where T: embassy_rp::spi::Instance
         //TODO Forcing dramatic skin color changes
         let skin_color: Rgb565 = match emotion_val {
             EmotionExpression::Neutral => Rgb565::CSS_DARK_OLIVE_GREEN, 
-            EmotionExpression::Surprise => Rgb565::CSS_DARK_MAGENTA, 
+            EmotionExpression::Surprise => Rgb565::CSS_MAGENTA, 
             _ => Rgb565::CSS_GRAY,
         };
 
@@ -657,22 +658,6 @@ where T: embassy_rp::spi::Instance
 }
 
 
-fn color_saturation_down(color: Rgb565, rsub: u8, bsub: u8, gsub:u8 ) -> Rgb565 {
-    let  r = color.r().saturating_sub(rsub);
-    let  g = color.g().saturating_sub(gsub); 
-    let  b = color.b().saturating_sub(bsub);
-    // this new method should handle the 5,6,5 mapping
-    Rgb565::new(r, g, b)
-}
-
-fn color_saturation_up(color: Rgb565, radd: u8, badd: u8, gadd:u8 ) -> Rgb565 {
-    let  r = color.r().saturating_add(radd);
-    let  g = color.g().saturating_add(gadd); 
-    let  b = color.b().saturating_add(badd);
-    // this new method should handle the 5,6,5 mapping
-    Rgb565::new(r, g, b)
-}
-
 fn draw_background_shapes(is_left: bool, _gaze_dir: GazeDirection, _emotion: EmotionExpression, _skin_color:Rgb565, frame_buf: &mut FullFrameBuf) 
 {
     let start_micros = Instant::now().as_micros();
@@ -689,7 +674,6 @@ fn draw_background_shapes(is_left: bool, _gaze_dir: GazeDirection, _emotion: Emo
         .stroke_color(Rgb565::BLACK)
         .build();
         
-
     if is_left {
         // TODO ensure that this ellipse is also reflected correctly on right eye
         draw_closed_poly(frame_buf, file_id, "grande_ellipse", &test_ellipse_style);
@@ -747,12 +731,14 @@ fn draw_inner_eye_shapes(is_left:bool, end_gaze_dir: GazeDirection, _emotion: Em
  * Draw shapes that overlay the eyeball (sclera and all) after drawing the iris etc
  */
 fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) {
+    static RUN_COUNT:AtomicUsize = AtomicUsize::new(0);
+    static TOTAL_ELAPSED_MICROS:AtomicUsize = AtomicUsize::new(0);
+
     let start_micros = Instant::now().as_micros();
     let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
 
-    //TODO get the style info from the SVG file itself at build time?
-    let slightly_brighter_skin = color_saturation_up(skin_color, 5, 10, 5);
-    let slightly_darker_skin = color_saturation_down(skin_color, 5, 10, 5);
+    let slightly_brighter_skin = adjust_lightness_rgb565(skin_color, FACTOR_BRIGHTEN_20);
+    let slightly_darker_skin = adjust_lightness_rgb565(skin_color, FACTOR_DARKEN_20);
 
     let upper_lid_top_style = PrimitiveStyleBuilder::new()
         .fill_color(slightly_brighter_skin)
@@ -785,8 +771,17 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
     draw_closed_poly(frame_buf, file_id, "upper_lid_neutral", &upper_lid_style);
     draw_closed_poly(frame_buf, file_id, "upper_lid_top_11", &upper_lid_top_style);
 
-    let _elapsed_micros = Instant::now().as_micros() - start_micros;
-    // info!("overlay redraw micros: {}", _elapsed_micros);
+    let _elapsed_micros:usize = (Instant::now().as_micros() - start_micros).try_into().unwrap();
+    let total_elapsed = TOTAL_ELAPSED_MICROS.fetch_add(_elapsed_micros, Ordering::Relaxed);
+    let total_runs = RUN_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if total_runs > 100 {
+        let total_elapsed = total_elapsed + _elapsed_micros;
+        let avg_elapsed_micros = total_elapsed / total_runs;
+        info!("overlay redraw avg micros: {}", avg_elapsed_micros);
+        // reset benchmarker
+        TOTAL_ELAPSED_MICROS.store(_elapsed_micros, Ordering::Relaxed);
+        RUN_COUNT.store(1, Ordering::Relaxed);
+    }
 }
 
 #[embassy_executor::task]
