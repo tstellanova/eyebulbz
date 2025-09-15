@@ -692,13 +692,6 @@ fn draw_background_shapes(is_left: bool, gaze_dir: GazeDirection, emotion: Emoti
     let start_micros = Instant::now().as_micros();
     let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
 
-    let upper_lid_top_style = PrimitiveStyleBuilder::new()
-        // .fill_color(Rgb565::CSS_OLIVE_DRAB)
-        .fill_color(skin_color)
-        .stroke_color(Rgb565::CSS_BLACK)
-        .stroke_width(1)
-        .stroke_alignment(StrokeAlignment::Center)
-        .build();
     let brow_style = PrimitiveStyleBuilder::new()
         .fill_color( Rgb565::CSS_BLACK )
         .stroke_color(Rgb565::BLACK)
@@ -715,9 +708,6 @@ fn draw_background_shapes(is_left: bool, gaze_dir: GazeDirection, emotion: Emoti
         // TODO ensure that this ellipse is also reflected correctly on right eye
         draw_closed_poly(frame_buf, file_id, "grande_ellipse", &test_ellipse_style);
     }
-
-    //TODO other variants for upper_lid_top ? or move to draw_eyeball_overlay_shapes?
-    draw_closed_poly(frame_buf, file_id, "upper_lid_top_11", &upper_lid_top_style);
 
     // The eyebrow covers a lot of area, so we don't want to redraw too often
     draw_closed_poly(frame_buf, file_id, "eyebrow", &brow_style);
@@ -791,6 +781,13 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
 
     //TODO get the style info from the SVG file itself at build time?
 
+    let upper_lid_top_style = PrimitiveStyleBuilder::new()
+        .fill_color(skin_color)
+        .stroke_color(Rgb565::CSS_BLACK)
+        .stroke_width(1)
+        .stroke_alignment(StrokeAlignment::Center)
+        .build();
+
     let upper_lid_style = PrimitiveStyleBuilder::new()
         .fill_color(hex_to_rgb565(0x73369a)) 
         .stroke_color(Rgb565::CSS_BLACK)
@@ -813,6 +810,7 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
     draw_closed_poly(frame_buf, file_id, "lower_lid_neutral", &lower_lid_style);
     draw_closed_poly(frame_buf, file_id, "upper_lid_shadow_neutral", &upper_lid_shadow_style);
     draw_closed_poly(frame_buf, file_id, "upper_lid_neutral", &upper_lid_style);
+    draw_closed_poly(frame_buf, file_id, "upper_lid_top_11", &upper_lid_top_style);
 
     let _elapsed_micros = Instant::now().as_micros() - start_micros;
     // info!("overlay redraw micros: {}", _elapsed_micros);
