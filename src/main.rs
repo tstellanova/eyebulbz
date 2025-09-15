@@ -154,8 +154,8 @@ const fn get_emotion_bg_bytes(emotion: EmotionExpression, is_left: bool) -> Opti
     match (is_left, emotion) {
         (true, EmotionExpression::Neutral) => Some(include_bytes!("../img/eyebg-left-neutral.qoi")),
         (false, EmotionExpression::Neutral) => Some(include_bytes!("../img/eyebg-right-neutral.qoi")),
-        (true, EmotionExpression::Surprise) => Some(include_bytes!("../img/eyebg-left-surprise.qoi")),
-        (false, EmotionExpression::Surprise) => Some(include_bytes!("../img/eyebg-right-surprise.qoi")),
+        // (true, EmotionExpression::Surprise) => Some(include_bytes!("../img/eyebg-left-surprise.qoi")),
+        // (false, EmotionExpression::Surprise) => Some(include_bytes!("../img/eyebg-right-surprise.qoi")),
         _ => None
     }
 }
@@ -464,6 +464,7 @@ async fn main(spawner: Spawner) {
             if mode_a_val == TestModeA::PurpleSweep {
                 emotion_val = EmotionExpression::Surprise;
             }
+            else { emotion_val = EmotionExpression::Neutral;}
             iris_dirty = true;
             bg_dirty = true;
             old_mode_a_val = mode_a_val;
@@ -580,7 +581,7 @@ where T: embassy_rp::spi::Instance
         }
         let loop_start_micros = Instant::now().as_micros();
 
-        let bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
+        let mut bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
         let iris_dirty = CUR_IRIS_DIRTY.load(Ordering::Relaxed);
         let brightness_percent: u8 = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
         let emotion_val: EmotionExpression = CUR_EMOTION.load(Ordering::Relaxed).try_into().unwrap();
@@ -591,14 +592,20 @@ where T: embassy_rp::spi::Instance
 
 
         let iris_color: Rgb565 = Rgb565::from(RawU16::new(CUR_IRIS_COLOR.load(Ordering::Relaxed)));
-        let skin_color: Rgb565 = Rgb565::CSS_DARK_OLIVE_GREEN; //TODO more dynamic colors
+
+        //TODO Forcing dramatic skin color changes
+        let skin_color: Rgb565 = match emotion_val {
+            EmotionExpression::Neutral => Rgb565::CSS_DARK_OLIVE_GREEN, 
+            EmotionExpression::Surprise => Rgb565::CSS_DARK_MAGENTA, 
+            _ => Rgb565::CSS_GRAY,
+        };
 
         if emotion_val != last_emotion_val {
             if let Some(src_bytes) = get_emotion_bg_bytes(emotion_val, is_left) {
                 cur_eyebg_qoi = Qoi::new(src_bytes).ok();
             } else { cur_eyebg_qoi = None; }
 
-            //bg_dirty = true; // TODO this should already have been calculated in CUR_BG_DIRTY?
+            bg_dirty = true; // TODO this should already have been calculated in CUR_BG_DIRTY?
             last_emotion_val = emotion_val;
         }
 
@@ -629,7 +636,7 @@ where T: embassy_rp::spi::Instance
                 let bg_img = Image::new(qoi, ORIGIN_POINT);
                 render_one_bg_image(disp_frame_buf, &bg_img);
             }
-            else { // just set a background color
+            else { // just set a background skincolor
                 let mut raw_fb =
                     RawFrameBuf::<Rgb565, &mut [u8]>::new(disp_frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
                 let _ = raw_fb.clear(skin_color); 
@@ -705,17 +712,15 @@ fn draw_background_shapes(is_left: bool, gaze_dir: GazeDirection, emotion: Emoti
         
 
     if is_left {
-        draw_closed_poly(frame_buf, file_id, "bg_ellipse01", &test_ellipse_style);
+        // TODO ensure that this ellipse is also reflected correctly on right eye
+        draw_closed_poly(frame_buf, file_id, "grande_ellipse", &test_ellipse_style);
     }
 
-    if gaze_dir == GazeDirection::West {
-        draw_closed_poly(frame_buf, file_id, "upper_lid_top_10", &upper_lid_top_style);
-        draw_closed_poly(frame_buf, file_id, "eyebrow_10", &brow_style);
-    }
-    else {
-        draw_closed_poly(frame_buf, file_id, "upper_lid_top_11", &upper_lid_top_style);
-        draw_closed_poly(frame_buf, file_id, "eyebrow_11", &brow_style);
-    }
+    //TODO other variants for upper_lid_top ? or move to draw_eyeball_overlay_shapes?
+    draw_closed_poly(frame_buf, file_id, "upper_lid_top_11", &upper_lid_top_style);
+
+    // The eyebrow covers a lot of area, so we don't want to redraw too often
+    draw_closed_poly(frame_buf, file_id, "eyebrow", &brow_style);
 
     let _elapsed_micros = Instant::now().as_micros() - start_micros;
     info!("bg redraw {} micros: {}", is_left, _elapsed_micros);
