@@ -373,7 +373,7 @@ async fn main(spawner: Spawner) {
     info!("Config done");
 
     let mut brightness_ascending: bool = true;
-    let mut old_mode_a_val  = TestModeA::Staring;
+    let mut old_mode_a_val  = TestModeA::MaxCount;
     let mut old_mode_b_val  = u8::MAX;
     let mut emotion_val = EmotionExpression::Neutral ;
     let mut cur_gaze_dir = GazeDirection::StraightAhead;
@@ -500,7 +500,7 @@ async fn main(spawner: Spawner) {
         // give some time to inter-task stuff
         Timer::after_millis(frame_render_gap_millis.try_into().unwrap()).await;
         // wait_for
-        RIGHT_EYE_DONE_SIGNAL.wait().await;
+        //RIGHT_EYE_DONE_SIGNAL.wait().await;
 
         iris_dirty = false;
         bg_dirty = false;
@@ -635,13 +635,13 @@ where T: embassy_rp::spi::Instance
 
         redraw_loop_count += 1;
         // synchronize left and right eye drawing
-        // if is_left {
-        //     let right_eye_loop_count = RIGHT_EYE_DONE_SIGNAL.wait().await;
-        //     if right_eye_loop_count != redraw_loop_count {
-        //         warn!("loop_count left {} != right {}",redraw_loop_count, right_eye_loop_count);
-        //     }
-        // }
-        if !is_left {
+        if is_left {
+            let right_eye_loop_count = RIGHT_EYE_DONE_SIGNAL.wait().await;
+            if right_eye_loop_count != redraw_loop_count {
+                warn!("loop_count left {} != right {}",redraw_loop_count, right_eye_loop_count);
+            }
+        }
+        else {
             // right eye is done drawing to screen -- notify folks waiting on this
             RIGHT_EYE_DONE_SIGNAL.signal(redraw_loop_count);
         }
