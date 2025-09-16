@@ -90,12 +90,13 @@ type FullFrameBuf = [u8; FRAME_SIZE_BYTES];
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Format)]
 #[repr(u8)]
 enum TestModeA {
-    StaringHStep = 0,
-    NeutralSweep = 1,
-    SurpriseSweep = 2,
-    UpDownSweep = 3,
-    StaringVStep = 4,
-    Randomize = 5,
+    HStep = 0,
+    HSweep = 1,
+    SurpriseHSweep = 2,
+    VSweep = 3,
+    VStep = 4,
+    SlowRandOrbit = 5,
+    Randomize = 6,
     MaxCount
 }
 
@@ -295,7 +296,7 @@ async fn main(spawner: Spawner) {
     info!("Core0 main MSP  = {:#010x}", sp);
 
     // prep for reading mode change events
-    MODE_A_VALUE.store(TestModeA::StaringVStep as u8, Ordering::Relaxed);
+    MODE_A_VALUE.store(TestModeA::HStep as u8, Ordering::Relaxed);
     MODE_B_VALUE.store(GazeDirection::StraightAhead as u8, Ordering::Relaxed);
 
     let mut led = Output::new(p.PIN_25, Level::High);
@@ -398,21 +399,20 @@ async fn main(spawner: Spawner) {
         let mut force_gaze_dir = false;
 
         match mode_a_val {
-            TestModeA::StaringHStep => { 
+            TestModeA::HStep => { 
                 emotion_val = EmotionExpression::Neutral;
-                brightness_percent = 80;
-                brightness_ascending = false;
+                brightness_percent = 75; brightness_ascending = false;
                 frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
             }
-            TestModeA::NeutralSweep => { 
+            TestModeA::HSweep => { 
                 emotion_val = EmotionExpression::Neutral;
                 iris_color = Rgb565::CSS_MEDIUM_TURQUOISE ;
             }
-            TestModeA::UpDownSweep => {
+            TestModeA::VSweep => {
                 emotion_val = EmotionExpression::Neutral;
-                iris_color = Rgb565::CSS_ROSY_BROWN;
+                iris_color = Rgb565::CSS_SIENNA;
             }
-            TestModeA::SurpriseSweep => {
+            TestModeA::SurpriseHSweep => {
                 emotion_val = EmotionExpression::Surprise;
                 brightness_percent = 50;
                 brightness_ascending = true;
@@ -420,10 +420,25 @@ async fn main(spawner: Spawner) {
                 let color_idx = main_loop_count % IRIS_PALETTE_PURPLE.len();
                 iris_color = IRIS_PALETTE_PURPLE[color_idx] ;
             }
-            TestModeA::StaringVStep => {
+            TestModeA::VStep => {
                 emotion_val = EmotionExpression::Neutral;
-                brightness_percent = 80;
-                brightness_ascending = false;
+                brightness_percent = 75; brightness_ascending = false;
+                frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
+            }
+            TestModeA::SlowRandOrbit => {
+                emotion_val = EmotionExpression::Neutral;
+                iris_color = Rgb565::CSS_FOREST_GREEN;
+                brightness_percent = 75; brightness_ascending = false;
+                let mut rng_bytes:[u8;1] = [0; 1];
+                rnd_src.fill_bytes(&mut rng_bytes);
+                let twiddler = rng_bytes[0];
+                let rand_sweep_idx = twiddler % NUM_GAZE_SWEEP_STEPS;
+                (cur_gaze_dir, look_step_idx) = 
+                    if twiddler > 127 { gaze_and_look_for_hsweep_index(rand_sweep_idx) } 
+                    else {  gaze_and_look_for_vsweep_index(rand_sweep_idx) };
+                iris_color = Rgb565::CSS_PERU;
+                force_gaze_dir = true;
+                iris_dirty = true;
                 frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
             }
             _ => {
@@ -442,16 +457,18 @@ async fn main(spawner: Spawner) {
             }
         }
     
-        if mode_a_val == TestModeA::NeutralSweep || mode_a_val == TestModeA::SurpriseSweep {
-            // flip loop direction back and forth
-            (cur_gaze_dir, look_step_idx) = gaze_and_look_for_hsweep_index(animation_step);
-            //info!("new m_a gaze_dir: {} look_step: {}", cur_gaze_dir, look_step_idx);
-            force_gaze_dir = true;
-            iris_dirty = true;
-        } else if mode_a_val == TestModeA::UpDownSweep {
-            (cur_gaze_dir, look_step_idx) = gaze_and_look_for_vsweep_index(animation_step);
-            force_gaze_dir = true;
-            iris_dirty = true;
+        if !force_gaze_dir {
+            if mode_a_val == TestModeA::HSweep || mode_a_val == TestModeA::SurpriseHSweep {
+                // flip loop direction back and forth
+                (cur_gaze_dir, look_step_idx) = gaze_and_look_for_hsweep_index(animation_step);
+                //info!("new m_a gaze_dir: {} look_step: {}", cur_gaze_dir, look_step_idx);
+                force_gaze_dir = true;
+                iris_dirty = true;
+            } else if mode_a_val == TestModeA::VSweep {
+                (cur_gaze_dir, look_step_idx) = gaze_and_look_for_vsweep_index(animation_step);
+                force_gaze_dir = true;
+                iris_dirty = true;
+            }
         }
 
         if old_mode_a_val != mode_a_val  {
@@ -468,7 +485,7 @@ async fn main(spawner: Spawner) {
                 animation_step = mode_b_val % NUM_GAZE_SWEEP_STEPS;
                 (cur_gaze_dir, look_step_idx)  = 
                     match mode_a_val {
-                        TestModeA::StaringVStep => { gaze_and_look_for_vsweep_index(animation_step) }
+                        TestModeA::VStep => { gaze_and_look_for_vsweep_index(animation_step) }
                         _ => { gaze_and_look_for_hsweep_index(animation_step)}
                     };
                 warn!("new m_b {} gaze_dr: {} look_step: {}", mode_b_val, cur_gaze_dir, look_step_idx);
