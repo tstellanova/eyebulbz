@@ -97,8 +97,9 @@ enum TestModeA {
     HSweep = 3,
     VSweep = 4,
     SurpriseHSweep = 5,
-    SlowRandOrbit = 6,
-    Randomize = 7,
+    Meander = 6,
+    SlowRandMeander = 7,
+    Randomize = 8,
     MaxCount
 }
 
@@ -425,8 +426,13 @@ async fn main(spawner: Spawner) {
                 let color_idx = main_loop_count % IRIS_PALETTE_PURPLE.len();
                 iris_color = IRIS_PALETTE_PURPLE[color_idx] ;
             }
-            TestModeA::SlowRandOrbit => {
+            TestModeA::Meander => {
                 iris_color = Rgb565::CSS_GOLDENROD;
+                emotion_val = EmotionExpression::Neutral;
+                brightness_percent = 75; brightness_ascending = false;
+            }
+            TestModeA::SlowRandMeander => {
+                iris_color = Rgb565::CSS_CHOCOLATE;
                 emotion_val = EmotionExpression::Neutral;
                 brightness_percent = 75; brightness_ascending = false;
                 frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
@@ -471,11 +477,12 @@ async fn main(spawner: Spawner) {
                 TestModeA::ClockStar => {
                     GazeDirection::gaze_and_step_for_sparse_star(main_loop_count)
                 }
-                TestModeA::SlowRandOrbit | TestModeA::Randomize => {
-                    let mut rng_bytes:[u8;1] = [0; 1];
-                    rnd_src.fill_bytes(&mut rng_bytes);
-                    let rand_count = rng_bytes[0] as usize;
-                    GazeDirection::gaze_and_look_for_meander(rand_count)
+                TestModeA::Meander => {
+                    GazeDirection::gaze_and_look_for_meander(main_loop_count)
+                }
+                TestModeA::SlowRandMeander | TestModeA::Randomize => {
+                    let rand_count = embassy_rp::clocks::RoscRng::next_u8();
+                    GazeDirection::gaze_and_look_for_meander(rand_count as usize)
                 }
                 _ => { unreachable!() }
             };
@@ -605,9 +612,9 @@ where T: embassy_rp::spi::Instance
 
         //TODO Forcing dramatic skin color changes
         let skin_color: Rgb565 = match emotion_val {
-            EmotionExpression::Neutral => Rgb565::CSS_DARK_OLIVE_GREEN, 
-            EmotionExpression::Surprise => Rgb565::CSS_MAGENTA, 
-            _ => Rgb565::CSS_GRAY,
+            EmotionExpression::Neutral => hex_to_rgb565(0x8EB34E), // Rgb565::CSS_DARK_OLIVE_GREEN, 
+            EmotionExpression::Surprise => Rgb565::CSS_ORANGE, 
+            _ => Rgb565::CSS_BLUE_VIOLET,
         };
 
         if emotion_val != last_emotion_val {
