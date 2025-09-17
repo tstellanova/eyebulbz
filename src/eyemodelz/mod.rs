@@ -4,30 +4,33 @@ use heapless::String; // fixed-capacity, no allocator, stack-based
 // use heapless::consts::*;
 use defmt::Format;
 
+
+
+pub const ORIGINAL_ASSET_GRID_DIM: u8 = 3;
+pub const ORIGINAL_ASSET_GRID_AREA: u8 = ORIGINAL_ASSET_GRID_DIM*ORIGINAL_ASSET_GRID_DIM;
 pub const NUM_TWEEN_MORPH_STEPS: u8 = 2; // The number of tween morph steps we support
-pub const NUM_LOOK_STEPS: u8 = NUM_TWEEN_MORPH_STEPS + 2; //includes start and end points
-pub const NUM_GAZE_SWEEP_STEPS: u8 = (NUM_LOOK_STEPS*2) - 1; // start, middle, end with transitions
-pub const SWEEP_MIDDLE_STEP_IDX:u8 = NUM_LOOK_STEPS - 1;
+pub const NUM_LOOK_STEPS: u8 = NUM_TWEEN_MORPH_STEPS + 2; //includes start and end points, and transitions
+pub const NUM_SHORT_SWEEP_STEPS: u8 = NUM_LOOK_STEPS*2 - 1; // start, middle, end with transitions
+pub const SHORT_SWEEP_FLIP_IDX:u8 = (NUM_SHORT_SWEEP_STEPS/2) + 1;
+
 pub const LAST_LOOK_STEP_IDX: u8 = NUM_LOOK_STEPS - 1;
 
+pub const SPARSE_GRID_ARM_LEN: u8 = NUM_LOOK_STEPS - 1;
+pub const SPARSE_GRID_DIM: u8 = ORIGINAL_ASSET_GRID_DIM + NUM_TWEEN_MORPH_STEPS*2; // 7 
+// pub const SPARSE_GRID_AREA: usize = (SPARSE_GRID_DIM as usize)*(SPARSE_GRID_DIM as usize);
+pub const SPARSE_GRID_LEN: u8 = NUM_TWEEN_MORPH_STEPS*(GazeDirection::MaxCount as u8 -1) + ORIGINAL_ASSET_GRID_AREA;
+pub const HALF_SPARSE_LEN: u8 = SPARSE_GRID_LEN / 2; // eg for 25 grid, 12
+pub const SPARSE_CTR_IDX: u8 = HALF_SPARSE_LEN;
 
-pub fn gaze_and_look_for_hsweep_index(sweep_idx: u8) -> (GazeDirection, u8) {
-    if sweep_idx > SWEEP_MIDDLE_STEP_IDX {
-        (GazeDirection::East, sweep_idx - SWEEP_MIDDLE_STEP_IDX)
-    }
-    else {
-        (GazeDirection::West, SWEEP_MIDDLE_STEP_IDX - sweep_idx)
-    }
-}
 
-pub fn gaze_and_look_for_vsweep_index(sweep_idx: u8) -> (GazeDirection, u8) {
-    if sweep_idx > SWEEP_MIDDLE_STEP_IDX {
-        (GazeDirection::South, sweep_idx - SWEEP_MIDDLE_STEP_IDX)
-    }
-    else {
-        (GazeDirection::North, SWEEP_MIDDLE_STEP_IDX - sweep_idx)
-    }
-}
+
+
+
+
+
+
+
+
 
 
 /// Trait for enums that can be converted into a single ASCII digit.
@@ -77,6 +80,96 @@ pub enum GazeDirection {
 }
 
 impl GazeDirection {
+    // Number of steps including center-> destination -> center
+    pub const RT_STEPS_PER_ARM: usize = 7; // 0,1,2,3,2,1,0
+    pub const NUM_FULL_SWEEP_STEPS:usize = Self::RT_STEPS_PER_ARM*2;
+
+    pub const CARDINAL_H8_ORDER: [GazeDirection; 8] = [
+        GazeDirection::NorthWest,
+        GazeDirection::North,
+        GazeDirection::NorthEast,
+        GazeDirection::West,
+        GazeDirection::East,
+        GazeDirection::SouthWest,
+        GazeDirection::South,
+        GazeDirection::SouthEast,
+    ];
+
+    pub const CARDINAL_CLOCK_EDGE_ORDER: [GazeDirection; 8] = [
+        GazeDirection::NorthWest,
+        GazeDirection::North,
+        GazeDirection::NorthEast,
+        GazeDirection::East,
+        GazeDirection::SouthEast,
+        GazeDirection::South,
+        GazeDirection::SouthWest,
+        GazeDirection::West,
+    ];
+
+    pub const CARDINAL_ANTICLOCK_EDGE_ORDER: [GazeDirection; 8] = [
+        GazeDirection::NorthWest,
+        GazeDirection::West,
+        GazeDirection::SouthWest,
+        GazeDirection::South,
+        GazeDirection::SouthEast,
+        GazeDirection::East,
+        GazeDirection::NorthEast,
+        GazeDirection::North,
+    ];
+
+    pub const CARDINAL_HSWEEP_ORDER: [GazeDirection; 2] = [
+        GazeDirection::West,
+        GazeDirection::East,
+    ];
+
+    pub const CARDINAL_VSWEEP_ORDER: [GazeDirection; 2] = [
+        GazeDirection::North,
+        GazeDirection::South,
+    ];
+
+    /// Given a monotonically increasing counter, 
+    /// and an edge arm traveral order,
+    /// return a valid GazeDirection and step index (1..=3) for steps in the gaze direction
+    ///  for the sparse 7x7 matrix that represents the asset data we have.
+    pub fn gaze_and_step_for_arm_order(counter: usize, arm_order: &[GazeDirection]) -> (GazeDirection, u8) {
+        let (dir_raw, offset) = (counter / Self::RT_STEPS_PER_ARM, counter % Self::RT_STEPS_PER_ARM);
+        let direction_idx = dir_raw % arm_order.len();
+
+        match offset {
+            0 => (GazeDirection::StraightAhead, 0),
+            1 => (arm_order[direction_idx], 1),
+            2 => (arm_order[direction_idx], 2),
+            3 => (arm_order[direction_idx], 3),
+            4 => (arm_order[direction_idx], 2),
+            5 => (arm_order[direction_idx], 1),
+            6 => (GazeDirection::StraightAhead, 0),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Given a raw monotonically increasing counter, sweep through each row in a meandering order
+    pub fn gaze_and_look_for_meander(mono_count: usize) -> (GazeDirection, u8) {
+        Self::gaze_and_step_for_arm_order(mono_count, &GazeDirection::CARDINAL_H8_ORDER)
+    }
+
+    /// Given a monotonically increasing counter, return a valid GazeDirection and
+    /// step index for the sparse 7x7 matrix that represents the asset data we have.
+    pub fn gaze_and_step_for_sparse_star(mono_count: usize) -> (GazeDirection, u8) {
+        Self::gaze_and_step_for_arm_order(mono_count, &GazeDirection::CARDINAL_CLOCK_EDGE_ORDER)
+    }
+
+    pub fn gaze_and_step_for_hsweep(mono_count: usize) -> (GazeDirection, u8) {
+        Self::gaze_and_step_for_arm_order(mono_count, &GazeDirection::CARDINAL_HSWEEP_ORDER)
+    }
+
+    pub fn gaze_and_step_for_vsweep(mono_count: usize) -> (GazeDirection, u8) {
+        Self::gaze_and_step_for_arm_order(mono_count, &GazeDirection::CARDINAL_VSWEEP_ORDER)
+    }
+
+}
+
+impl GazeDirection {
+
     /// Provide the (row, column) 3x3 grid index for a gaze direction 
     pub fn row_col(&self) -> (u8, u8) {
         match self {
@@ -109,6 +202,7 @@ impl GazeDirection {
         }
     }
 }
+
 
 
 /// Helper function for generating unique IDs for step-by-step morphed SVG assets.
