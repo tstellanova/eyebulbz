@@ -298,7 +298,7 @@ async fn main(spawner: Spawner) {
     info!("Core0 main MSP  = {:#010x}", sp);
 
     // prep for reading mode change events
-    MODE_A_VALUE.store(TestModeA::ClockStar as u8, Ordering::Relaxed);
+    MODE_A_VALUE.store(TestModeA::Meander as u8, Ordering::Relaxed);
     MODE_B_VALUE.store(GazeDirection::StraightAhead as u8, Ordering::Relaxed);
 
     let mut led = Output::new(p.PIN_25, Level::High);
@@ -406,7 +406,9 @@ async fn main(spawner: Spawner) {
 
         match mode_a_val {
             TestModeA::HStep | TestModeA::VStep => {
-                iris_color = if mode_a_val == TestModeA::HStep { Rgb565::CSS_SLATE_GRAY } else { Rgb565::CSS_LIME_GREEN };
+                iris_color = 
+                    if mode_a_val ==  TestModeA::HStep { Rgb565::CSS_SLATE_GRAY } 
+                    else { Rgb565::CSS_LIME_GREEN };
                 emotion_val = EmotionExpression::Neutral;
                 brightness_percent = 75; brightness_ascending = false;
                 frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
@@ -417,7 +419,7 @@ async fn main(spawner: Spawner) {
                 emotion_val = EmotionExpression::Neutral;
             }
             TestModeA::VSweep => {
-                iris_color = Rgb565::CSS_SADDLE_BROWN;
+                iris_color = Rgb565::CSS_GOLDENROD;
                 emotion_val = EmotionExpression::Neutral;
             }
             TestModeA::SurpriseHSweep => {
@@ -427,7 +429,7 @@ async fn main(spawner: Spawner) {
                 iris_color = IRIS_PALETTE_PURPLE[color_idx] ;
             }
             TestModeA::Meander => {
-                iris_color = Rgb565::CSS_GOLDENROD;
+                iris_color = hex_to_rgb565(0x405D80); 
                 emotion_val = EmotionExpression::Neutral;
                 brightness_percent = 75; brightness_ascending = false;
             }
@@ -575,7 +577,7 @@ where T: embassy_rp::spi::Instance
             DISPLAY1_FRAMEBUF.init_with(move || [0; FRAME_SIZE_BYTES])
         };
     
-    let mut cur_eyebg_qoi: Option<Qoi> = None;
+    let mut eyebg_qoi: Option<Qoi> = None;
     let mut display_dirty = true;
 
     let mut eye_ready_sub = EYE_DATA_READY_CHANNEL.subscriber().unwrap();
@@ -601,30 +603,26 @@ where T: embassy_rp::spi::Instance
         }
         let loop_start_micros = Instant::now().as_micros();
 
-        let mut bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
+        let bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
         let iris_dirty = CUR_IRIS_DIRTY.load(Ordering::Relaxed);
         let brightness_percent: u8 = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
         let emotion_val: EmotionExpression = CUR_EMOTION.load(Ordering::Relaxed).try_into().unwrap();
         let cur_gaze_dir: GazeDirection = CUR_GAZE_DIR.load(Ordering::Relaxed).try_into().unwrap();
         let look_step: u8 = CUR_LOOK_STEP.load(Ordering::Relaxed);
-
         let iris_color: Rgb565 = Rgb565::from(RawU16::new(CUR_IRIS_COLOR.load(Ordering::Relaxed)));
-
-        //TODO Forcing dramatic skin color changes
         let skin_color: Rgb565 = match emotion_val {
-            EmotionExpression::Neutral => hex_to_rgb565(0x8EB34E), // Rgb565::CSS_DARK_OLIVE_GREEN, 
+            EmotionExpression::Neutral => hex_to_rgb565(0x8EB34E), //mid-lightness of CSS_DARK_OLIVE_GREEN
             EmotionExpression::Surprise => Rgb565::CSS_ORANGE, 
             _ => Rgb565::CSS_BLUE_VIOLET,
         };
 
         if emotion_val != last_emotion_val {
             if let Some(src_bytes) = get_emotion_bg_bytes(emotion_val, is_left) {
-                cur_eyebg_qoi = Qoi::new(src_bytes).ok();
+                eyebg_qoi = Qoi::new(src_bytes).ok();
             } else { 
-                cur_eyebg_qoi = None; 
+                eyebg_qoi = None; 
             }
 
-            bg_dirty = true; // TODO this should already have been calculated in CUR_BG_DIRTY?
             last_emotion_val = emotion_val;
         }
 
@@ -649,7 +647,7 @@ where T: embassy_rp::spi::Instance
         */
 
         if bg_dirty || display_dirty  {
-            if let Some(ref qoi) = cur_eyebg_qoi {
+            if let Some(ref qoi) = eyebg_qoi {
                 // recreating the Image drawable each time has low overhead
                 let bg_img = Image::new(qoi, ORIGIN_POINT);
                 render_one_bg_image(disp_frame_buf, &bg_img);
@@ -671,8 +669,7 @@ where T: embassy_rp::spi::Instance
         }
 
         if display_dirty {
-            // dim a bit before we blit
-            // Process data from SPI1
+            // blit frame buffer to display via SPI
             display
                 .show_raw_data(0, 0, 
                     DISPLAY_WIDTH, DISPLAY_HEIGHT, 
@@ -681,17 +678,17 @@ where T: embassy_rp::spi::Instance
                 .unwrap();
             display_dirty = false;
         }
-        // Now set the brightness to the desired destination
+        // Now set the brightness to the desired level
         backlight_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
-
 
         redraw_loop_count += 1;
         // synchronize left and right eye drawing
         if is_left {
-            let _right_eye_loop_count = RIGHT_EYE_DONE_SIGNAL.wait().await;
-            // if _right_eye_loop_count != redraw_loop_count {
-            //     warn!("loop_count left {} != right {}",redraw_loop_count, _right_eye_loop_count);
-            // }
+            let right_eye_loop_count = RIGHT_EYE_DONE_SIGNAL.wait().await;
+            // This breaks when the debugger is attached, for some reason
+            if right_eye_loop_count != redraw_loop_count {
+                warn!("loop_count left {} != right {}",redraw_loop_count, right_eye_loop_count);
+            }
         }
         else {
             // right eye is done drawing to screen -- notify folks waiting on this
