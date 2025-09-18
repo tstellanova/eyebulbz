@@ -1,6 +1,12 @@
 #![no_std]
 #![no_main]
 
+/// 
+/// This embedded application draws eyeballs on small LCD screens.
+/// 
+/// reference: Moriyama, Xiao, Cohn 2004 "Meticulously Detailed Eye Model and Its Application to Analysis of Facial Image"
+/// 
+
 use {defmt_rtt as _, panic_probe as _};
 
 use defmt::{info, warn, error, Format, unwrap};
@@ -629,7 +635,7 @@ where T: embassy_rp::spi::Instance
         /*
         Listing here the overlapping regions of the eye that 
          stack up and are visible to an observer, in part from
-         reference: Moriyama, Xiao, Cohn 2004
+         reference: Moriyama, Xiao, Cohn 2004 "Meticulously Detailed Eye Model and Its Application to Analysis of Facial Image"
         Background:
          - surrounding skin
          - brow
@@ -777,7 +783,17 @@ fn draw_inner_eye_shapes(is_left:bool, end_gaze_dir: GazeDirection, _emotion: Em
 }
 
 /**
- * Draw shapes that overlay the eyeball (sclera and all) after drawing the iris etc
+ Draw shapes that overlay the eyeball (sclera and all) after drawing the iris &c.
+ Some overlay parts are inspired by reference to Moriyama et al paper.        
+  - inner (toward nose) and outer eye corners - ref region5 and region6 
+  - lower eyelid
+    - ref region2 and region3
+    - ref curve5 infraorbital furrow
+  - upper eyelid - ref region1
+
+  The lids themselves can be though of as consisting of multiple parts:
+  - bulge bright region
+  - infraorbital furrow
  */
 fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) {
     static RUN_COUNT:AtomicUsize = AtomicUsize::new(0);
@@ -786,39 +802,54 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
     let start_micros = Instant::now().as_micros();
     let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
 
+    let upper_lid_skin = hex_to_rgb565(0x73369a); //TODO get this custom color elsewhere
+    let upper_lid_shine_color= adjust_lightness_rgb565(upper_lid_skin, FACTOR_BRIGHTEN_20);
+    let upper_lid_skin_darker = adjust_lightness_rgb565(upper_lid_skin, FACTOR_DARKEN_30);
+
     let slightly_brighter_skin = adjust_lightness_rgb565(skin_color, FACTOR_BRIGHTEN_20);
     let slightly_darker_skin = adjust_lightness_rgb565(skin_color, FACTOR_DARKEN_20);
 
-    let upper_lid_top_style = PrimitiveStyleBuilder::new()
-        .fill_color(slightly_brighter_skin)
-        .stroke_color(Rgb565::CSS_BLACK)
-        .stroke_width(1)
+    let upper_lid_shine_style = PrimitiveStyleBuilder::new()
+        .fill_color(upper_lid_shine_color)
+        .stroke_color(upper_lid_skin_darker)
+        .stroke_width(2)
         .stroke_alignment(StrokeAlignment::Center)
         .build();
 
     let upper_lid_style = PrimitiveStyleBuilder::new()
-        .fill_color(hex_to_rgb565(0x73369a)) 
-        .stroke_color(Rgb565::CSS_BLACK)
-        .stroke_width(1)
-        .stroke_alignment(StrokeAlignment::Center)
+        .fill_color(upper_lid_skin) 
         .build();
 
     let upper_lid_shadow_style = PrimitiveStyleBuilder::new()
         .fill_color(hex_to_rgb565(0x1d1c4f))
         .build();
 
-    let lower_lid_style = PrimitiveStyleBuilder::new()
+    let lower_lid_bulge_style = PrimitiveStyleBuilder::new()
         .fill_color(slightly_darker_skin)
+        .stroke_color(Rgb565::CSS_BLACK)
+        .stroke_width(1)
+        .stroke_alignment(StrokeAlignment::Center)
+        .build();
+
+    let lower_lid_shine_style = PrimitiveStyleBuilder::new()
+        .fill_color(slightly_brighter_skin)
         .stroke_color(Rgb565::CSS_BLACK)
         .stroke_width(1)
         .stroke_alignment(StrokeAlignment::Center)
         .build();
  
     // if emotion == EmotionExpression::Surprise { //TODO handle emotions 
-    draw_closed_poly(frame_buf, file_id, "lower_lid_neutral", &lower_lid_style);
+
+    // draw the entire upper eyelid "module"
     draw_closed_poly(frame_buf, file_id, "upper_lid_shadow_neutral", &upper_lid_shadow_style);
-    draw_closed_poly(frame_buf, file_id, "upper_lid_neutral", &upper_lid_style);
-    draw_closed_poly(frame_buf, file_id, "upper_lid_top_11", &upper_lid_top_style);
+    // we paint the shine below the lid because we want a line width on top?
+    draw_closed_poly(frame_buf, file_id, "upper_lid_shine_11", &upper_lid_shine_style);
+    draw_closed_poly(frame_buf, file_id, "upper_lid_11", &upper_lid_style);
+
+    // draw the entire lower eyelid "module"
+    draw_closed_poly(frame_buf, file_id, "lower_lid_bulge_11", &lower_lid_bulge_style);
+    draw_closed_poly(frame_buf, file_id, "lower_lid_shine_11", &lower_lid_shine_style);
+
 
     let _elapsed_micros:usize = (Instant::now().as_micros() - start_micros).try_into().unwrap();
     let total_elapsed = TOTAL_ELAPSED_MICROS.fetch_add(_elapsed_micros, Ordering::Relaxed);
