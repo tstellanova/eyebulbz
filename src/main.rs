@@ -81,10 +81,6 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
     embassy_rp::binary_info::rp_program_build_attribute!(),
 ];
 
-
-// const DISPLAY_FREQ_BASE: u32 = 60_000_000;
-// const DISPLAY_FREQ_MAX: u32 = 80_000_000;
-// const DISPLAY_FREQ: u32 = (DISPLAY_FREQ_MAX - DISPLAY_FREQ_BASE)/2 + DISPLAY_FREQ_BASE;
 const DISPLAY_FREQ: u32 = 72_000_000; //apparently the fastest we can drive with short wire lengths
 
 const ORIGIN_POINT:Point = Point::new(0, 0);
@@ -109,7 +105,8 @@ enum TestModeA {
     MaxCount
 }
 
-const INTERFRAME_DELAY_MILLIS:usize = 120;
+// const INTERFRAME_DELAY_MILLIS:usize = 100;
+const INTERFRAME_DELAY_MILLIS:usize = 50;
 
 const MAX_MODE_B_COUNT: u8 = GazeDirection::NUM_FULL_SWEEP_STEPS as u8;
 
@@ -141,6 +138,7 @@ static MODE_A_VALUE: AtomicU8 = AtomicU8::new(0);
 static MODE_B_VALUE: AtomicU8 = AtomicU8::new(0);
 static CUR_BRIGHTNESS_PCT: AtomicU8 = AtomicU8::new(50);
 static CUR_IRIS_COLOR: AtomicU16 = AtomicU16::new(0x18ff);
+static CUR_SKIN_COLOR: AtomicU16 = AtomicU16::new(0x000777);  
 static CUR_LOOK_STEP: AtomicU8 = AtomicU8::new(0);
 static CUR_BG_DIRTY: AtomicBool = AtomicBool::new(true);
 static CUR_IRIS_DIRTY: AtomicBool = AtomicBool::new(true);
@@ -402,11 +400,10 @@ async fn main(spawner: Spawner) {
         let mode_a_val: TestModeA = MODE_A_VALUE.load(Ordering::Relaxed).try_into().unwrap();
         let mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
         let mut brightness_percent = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
-
         let mut frame_render_gap_millis = INTERFRAME_DELAY_MILLIS;
-
         let iris_color: Rgb565;
-        
+        let mut skin_color: Rgb565 =  hex_to_rgb565(0x8EB34E); //mid-lightness of CSS_DARK_OLIVE_GREEN
+
         // Let the user manually adjust the gaze direction using the MODE_B button
         let mut freeze_gaze_dir = false;
 
@@ -433,6 +430,7 @@ async fn main(spawner: Spawner) {
                 brightness_percent = 90; brightness_ascending = true;
                 let color_idx = main_loop_count % IRIS_PALETTE_PURPLE.len();
                 iris_color = IRIS_PALETTE_PURPLE[color_idx] ;
+                skin_color = Rgb565::CSS_ORANGE;
             }
             TestModeA::Meander => {
                 iris_color = hex_to_rgb565(0x405D80); 
@@ -449,7 +447,7 @@ async fn main(spawner: Spawner) {
                 iris_color = Rgb565::CSS_DEEP_SKY_BLUE;
                 emotion_val = EmotionExpression::Neutral;
                 brightness_percent = 75; brightness_ascending = false;
-                frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
+                frame_render_gap_millis = INTERFRAME_DELAY_MILLIS / 2;
             }
             TestModeA::Randomize => {
                 emotion_val = EmotionExpression::Neutral;
@@ -542,6 +540,7 @@ async fn main(spawner: Spawner) {
         CUR_EMOTION.store(emotion_val as u8, Ordering::Relaxed);
         CUR_LOOK_STEP.store(look_step_idx, Ordering::Relaxed);
         CUR_IRIS_COLOR.store(iris_color.into_storage(), Ordering::Relaxed);
+        CUR_SKIN_COLOR.store(skin_color.into_storage(), Ordering::Relaxed);
         CUR_IRIS_DIRTY.store(iris_dirty, Ordering::Relaxed);
         CUR_BG_DIRTY.store(bg_dirty, Ordering::Relaxed);
         CUR_BRIGHTNESS_PCT.store(brightness_percent, Ordering::Relaxed);
@@ -591,6 +590,7 @@ where T: embassy_rp::spi::Instance
 
     let mut redraw_loop_count: usize = 0;
     let mut loop_elapsed_total: u64 = 0;
+    let mut last_brightness_pct: u8 = 25;
 
     loop {
         // sync on eye parameters data ready
@@ -609,18 +609,21 @@ where T: embassy_rp::spi::Instance
         }
         let loop_start_micros = Instant::now().as_micros();
 
+  
+          // dim slightly while we start redrawing
+        let dim_light_pct = if last_brightness_pct >= 7 { last_brightness_pct - 7 } else {0};
+        backlight_pwm_out.set_duty_cycle_percent(dim_light_pct).unwrap();
+
+        let brightness_percent: u8 = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
+        let mid_light_pct = (brightness_percent + dim_light_pct) / 2;
+
         let bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
         let iris_dirty = CUR_IRIS_DIRTY.load(Ordering::Relaxed);
-        let brightness_percent: u8 = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
         let emotion_val: EmotionExpression = CUR_EMOTION.load(Ordering::Relaxed).try_into().unwrap();
-        let cur_gaze_dir: GazeDirection = CUR_GAZE_DIR.load(Ordering::Relaxed).try_into().unwrap();
+        let gaze_dir: GazeDirection = CUR_GAZE_DIR.load(Ordering::Relaxed).try_into().unwrap();
         let look_step: u8 = CUR_LOOK_STEP.load(Ordering::Relaxed);
         let iris_color: Rgb565 = Rgb565::from(RawU16::new(CUR_IRIS_COLOR.load(Ordering::Relaxed)));
-        let skin_color: Rgb565 = match emotion_val {
-            EmotionExpression::Neutral => hex_to_rgb565(0x8EB34E), //mid-lightness of CSS_DARK_OLIVE_GREEN
-            EmotionExpression::Surprise => Rgb565::CSS_ORANGE, 
-            _ => Rgb565::CSS_BLUE_VIOLET,
-        };
+        let skin_color: Rgb565 = Rgb565::from(RawU16::new(CUR_SKIN_COLOR.load(Ordering::Relaxed)));
 
         if emotion_val != last_emotion_val {
             if let Some(src_bytes) = get_emotion_bg_bytes(emotion_val, is_left) {
@@ -664,17 +667,20 @@ where T: embassy_rp::spi::Instance
                 let _ = raw_fb.clear(skin_color); 
             }
 
-            draw_background_shapes(is_left, cur_gaze_dir, emotion_val, skin_color, disp_frame_buf);
+            draw_background_shapes(is_left, gaze_dir, emotion_val, skin_color, disp_frame_buf);
             display_dirty = true;
         }
 
         if iris_dirty || display_dirty  {
-            draw_inner_eye_shapes(is_left, cur_gaze_dir, emotion_val, look_step, iris_color, disp_frame_buf);
-            draw_eyeball_overlay_shapes(is_left, cur_gaze_dir, emotion_val, skin_color, disp_frame_buf);
+            draw_inner_eye_shapes(is_left, gaze_dir, emotion_val, look_step, iris_color, disp_frame_buf);
+            draw_eyeball_overlay_shapes(is_left, gaze_dir, emotion_val, skin_color, disp_frame_buf);
             display_dirty = true;
         }
 
         if display_dirty {
+            // start transition to new brightness
+            backlight_pwm_out.set_duty_cycle_percent(mid_light_pct).unwrap();
+        
             // blit frame buffer to display via SPI
             display
                 .show_raw_data(0, 0, 
@@ -686,6 +692,8 @@ where T: embassy_rp::spi::Instance
         }
         // Now set the brightness to the desired level
         backlight_pwm_out.set_duty_cycle_percent(brightness_percent).unwrap();
+
+        last_brightness_pct = brightness_percent;
 
         redraw_loop_count += 1;
         // synchronize left and right eye drawing
@@ -838,13 +846,14 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
     // if emotion == EmotionExpression::Surprise { //TODO handle emotions differently
 
     // draw the entire upper eyelid "module"
-    draw_closed_poly(frame_buf, file_id, "upper_lid_shadow_neutral", &upper_lid_shadow_style);
+    draw_closed_poly(frame_buf, file_id, "upper_lid_shadow_11", &upper_lid_shadow_style);
     // we paint the shine below the lid because we want a line width on top?
     draw_closed_poly(frame_buf, file_id, "upper_lid_shine_11", &upper_lid_shine_style);
     draw_closed_poly(frame_buf, file_id, "upper_lid_11", &upper_lid_style);
 
     // draw the entire lower eyelid "module"
     draw_closed_poly(frame_buf, file_id, "outer_corner_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x24102f))); // TODO
+    draw_closed_poly(frame_buf, file_id, "inner_corner_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x24102f))); // TODO
     draw_closed_poly(frame_buf, file_id, "lower_lid_bulge_11", &lower_lid_bulge_style);
     draw_closed_poly(frame_buf, file_id, "lower_lid_shine_11", &lower_lid_shine_style);
 
