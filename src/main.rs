@@ -834,6 +834,8 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
 
     let lower_lid_bulge_style = PrimitiveStyleBuilder::new()
         .fill_color(slightly_darker_skin)
+        .stroke_color(skin_color)
+        .stroke_width(1)
         .build();
 
     let lower_lid_shine_style = PrimitiveStyleBuilder::new()
@@ -845,17 +847,18 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
  
     // if emotion == EmotionExpression::Surprise { //TODO handle emotions differently
 
+    // draw the entire lower eyelid "module"
+    draw_closed_poly(frame_buf, file_id, "outer_corner_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x24102f))); // TODO
+    draw_closed_poly(frame_buf, file_id, "inner_corner_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x24102f))); // TODO
+    draw_closed_poly(frame_buf, file_id, "lower_lid_bulge_11", &lower_lid_bulge_style);
+    draw_closed_poly(frame_buf, file_id, "lower_lid_shine_11", &lower_lid_shine_style);
+
     // draw the entire upper eyelid "module"
     draw_closed_poly(frame_buf, file_id, "upper_lid_shadow_11", &upper_lid_shadow_style);
     // we paint the shine below the lid because we want a line width on top?
     draw_closed_poly(frame_buf, file_id, "upper_lid_shine_11", &upper_lid_shine_style);
     draw_closed_poly(frame_buf, file_id, "upper_lid_11", &upper_lid_style);
 
-    // draw the entire lower eyelid "module"
-    draw_closed_poly(frame_buf, file_id, "outer_corner_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x24102f))); // TODO
-    draw_closed_poly(frame_buf, file_id, "inner_corner_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x24102f))); // TODO
-    draw_closed_poly(frame_buf, file_id, "lower_lid_bulge_11", &lower_lid_bulge_style);
-    draw_closed_poly(frame_buf, file_id, "lower_lid_shine_11", &lower_lid_shine_style);
 
 
     let _elapsed_micros:usize = (Instant::now().as_micros() - start_micros).try_into().unwrap();
