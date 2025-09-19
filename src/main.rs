@@ -826,9 +826,6 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
 
     let lower_lid_bulge_style = PrimitiveStyleBuilder::new()
         .fill_color(slightly_darker_skin)
-        .stroke_color(Rgb565::CSS_BLACK)
-        .stroke_width(1)
-        .stroke_alignment(StrokeAlignment::Center)
         .build();
 
     let lower_lid_shine_style = PrimitiveStyleBuilder::new()
@@ -838,7 +835,7 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
         .stroke_alignment(StrokeAlignment::Center)
         .build();
  
-    // if emotion == EmotionExpression::Surprise { //TODO handle emotions 
+    // if emotion == EmotionExpression::Surprise { //TODO handle emotions differently
 
     // draw the entire upper eyelid "module"
     draw_closed_poly(frame_buf, file_id, "upper_lid_shadow_neutral", &upper_lid_shadow_style);
@@ -847,6 +844,7 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
     draw_closed_poly(frame_buf, file_id, "upper_lid_11", &upper_lid_style);
 
     // draw the entire lower eyelid "module"
+    draw_closed_poly(frame_buf, file_id, "outer_corner_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x24102f))); // TODO
     draw_closed_poly(frame_buf, file_id, "lower_lid_bulge_11", &lower_lid_bulge_style);
     draw_closed_poly(frame_buf, file_id, "lower_lid_shine_11", &lower_lid_shine_style);
 
