@@ -506,8 +506,6 @@ async fn main(spawner: Spawner) {
             info!("new m_b {} gaze: {} step: {}", mode_b_val, cur_gaze_dir, look_step_idx);
         }
 
-
-
         // 5000/480 = steps per ten seconds
         // 100 / num_steps = pct per step
         // TODO brightness cycling based on mode?
@@ -709,12 +707,14 @@ where T: embassy_rp::spi::Instance
             RIGHT_EYE_DONE_SIGNAL.signal(redraw_loop_count);
         }
 
-        let loop_finished_micros = Instant::now().as_micros();
-        let loop_elapsed_micros = loop_finished_micros - loop_start_micros;
-        loop_elapsed_total += loop_elapsed_micros;
-        if redraw_loop_count % 1000 == 0 {
-            let avg_loop_elapsed = loop_elapsed_total / redraw_loop_count as u64;
-            info!("mainloop {} µs",avg_loop_elapsed);
+        let _loop_finished_micros = Instant::now().as_micros();
+        if !is_left {
+            let loop_elapsed_micros = _loop_finished_micros - loop_start_micros;
+            loop_elapsed_total += loop_elapsed_micros;
+            if redraw_loop_count % 1000 == 0 {
+                let avg_loop_elapsed = loop_elapsed_total / redraw_loop_count as u64;
+                info!("redraw_loop {} µs",avg_loop_elapsed);
+            }
         }
     }
 }
@@ -745,7 +745,7 @@ fn draw_background_shapes(is_left: bool, _gaze_dir: GazeDirection, _emotion: Emo
     draw_closed_poly(frame_buf, file_id, "eyebrow", &brow_style);
 
     let _elapsed_micros = Instant::now().as_micros() - start_micros;
-    info!("bg redraw {} {}µs", is_left, _elapsed_micros);
+    info!("bg redraw {} {}µs", if is_left {"left "} else { "right"}, _elapsed_micros);
 
 }
 
@@ -777,15 +777,17 @@ fn draw_inner_eye_shapes(is_left:bool, end_gaze_dir: GazeDirection, _emotion: Em
     draw_stepped_asset(frame_buf, file_id, "glint_sm", end_gaze_dir, look_step, &PrimitiveStyle::with_fill(Rgb565::WHITE));
 
     let _elapsed_micros:usize = (Instant::now().as_micros() - start_micros).try_into().unwrap();
-    let total_elapsed = TOTAL_ELAPSED_MICROS.fetch_add(_elapsed_micros, Ordering::Relaxed);
-    let total_runs = RUN_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    if total_runs > 1000 {
-        let total_elapsed = total_elapsed + _elapsed_micros;
-        let avg_elapsed_micros = total_elapsed / total_runs;
-        info!("inner redraw {}µs", avg_elapsed_micros);
-        // reset benchmarker
-        TOTAL_ELAPSED_MICROS.store(_elapsed_micros, Ordering::Relaxed);
-        RUN_COUNT.store(1, Ordering::Relaxed);
+    if !is_left {
+        let total_elapsed = TOTAL_ELAPSED_MICROS.fetch_add(_elapsed_micros, Ordering::Relaxed);
+        let total_runs = RUN_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        if total_runs > 1000 {
+            let total_elapsed = total_elapsed + _elapsed_micros;
+            let avg_elapsed_micros = total_elapsed / total_runs;
+            info!("inner redraw {}µs", avg_elapsed_micros);
+            // reset benchmarker
+            TOTAL_ELAPSED_MICROS.store(_elapsed_micros, Ordering::Relaxed);
+            RUN_COUNT.store(1, Ordering::Relaxed);
+        }
     }
 
 }
@@ -862,15 +864,17 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
 
 
     let _elapsed_micros:usize = (Instant::now().as_micros() - start_micros).try_into().unwrap();
-    let total_elapsed = TOTAL_ELAPSED_MICROS.fetch_add(_elapsed_micros, Ordering::Relaxed);
-    let total_runs = RUN_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    if total_runs > 1000 {
-        let total_elapsed = total_elapsed + _elapsed_micros;
-        let avg_elapsed_micros = total_elapsed / total_runs;
-        info!("overlay redraw {}µs", avg_elapsed_micros);
-        // reset benchmarker
-        TOTAL_ELAPSED_MICROS.store(_elapsed_micros, Ordering::Relaxed);
-        RUN_COUNT.store(1, Ordering::Relaxed);
+    if !is_left {
+        let total_elapsed = TOTAL_ELAPSED_MICROS.fetch_add(_elapsed_micros, Ordering::Relaxed);
+        let total_runs = RUN_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        if total_runs > 1000 {
+            let total_elapsed = total_elapsed + _elapsed_micros;
+            let avg_elapsed_micros = total_elapsed / total_runs;
+            info!("overlay redraw {}µs", avg_elapsed_micros);
+            // reset benchmarker
+            TOTAL_ELAPSED_MICROS.store(_elapsed_micros, Ordering::Relaxed);
+            RUN_COUNT.store(1, Ordering::Relaxed);
+        }
     }
 }
 
