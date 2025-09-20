@@ -9,15 +9,13 @@
 
 use {defmt_rtt as _, panic_probe as _};
 
-use defmt::{info, warn, error, Format, unwrap};
-// use embassy_rp::pio_programs::rotary_encoder::Direction;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
+use defmt::{info, warn, Format, unwrap};
+
 use embedded_graphics::primitives::StrokeAlignment;
+
 use core::u8;
 use core::{default::Default};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, AtomicUsize, Ordering};
-
 
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_executor::{Spawner, Executor};
@@ -25,8 +23,7 @@ use embassy_rp:: {
     self as hal, block::ImageDef, gpio::{Input, Level, Output, Pull}, peripherals::{self, SPI0, SPI1}, pwm::{self, Pwm, SetDutyCycle}, spi::{self, Async, Spi},
 };
 
-
-use embassy_sync::{blocking_mutex::{raw::{NoopRawMutex}}, mutex::Mutex, pubsub::PubSubChannel};
+use embassy_sync::{blocking_mutex::{raw::{NoopRawMutex,CriticalSectionRawMutex}}, mutex::Mutex, pubsub::PubSubChannel, signal::Signal};
 use embassy_time::{Delay, Instant, Timer};
 
 use embedded_graphics::{
@@ -147,6 +144,7 @@ static CUR_GAZE_DIR: AtomicU8 = AtomicU8::new(GazeDirection::StraightAhead as u8
 
 // Static signals that can be shared between tasks
 static EYE_DATA_READY_CHANNEL: PubSubChannel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, usize, 4, 4, 1> = PubSubChannel::new();
+static LEFT_EYE_DONE_SIGNAL: Signal<CriticalSectionRawMutex, usize> = Signal::new();
 static RIGHT_EYE_DONE_SIGNAL: Signal<CriticalSectionRawMutex, usize> = Signal::new();
 
 
@@ -186,7 +184,7 @@ fn get_svg_path_by_id<'a>(file_id: SvgFileId, path_id: &'a str) -> Option<&'a Cl
     match file_id {
         SvgFileId::EyeLeft => get_svg_path_by_id_file_EyeLeft(path_id),
         SvgFileId::EyeRight => get_svg_path_by_id_file_EyeRight(path_id),
-        _ => { error!("Unknown path_id: {}", path_id); None }
+        _ => { warn!("Missing: {}", path_id); None }
     }
 }
 
@@ -237,9 +235,28 @@ fn draw_stepped_asset(frame_buf: &mut FullFrameBuf,
     look_step_idx: u8, 
     style: &PrimitiveStyle<Rgb565>) 
 {
-    let asset_id = stepped_asset_name(id_prefix, gaze_direction, look_step_idx);
-    // info!("draw: {} {} {} > {}", id_prefix, gaze_direction, look_step_idx, &asset_id.as_str());
-    draw_closed_poly(frame_buf, file_id, &asset_id, style);
+    let mut asset_id = stepped_asset_name(id_prefix, gaze_direction, look_step_idx);
+    let cpoly_opt = 
+        if let Some(cpoly) = get_svg_path_by_id(file_id,&asset_id) { Some(cpoly) }
+            else {
+                // try using the extreme of the gaze direction arm
+                asset_id = stepped_asset_name(id_prefix, gaze_direction, LAST_LOOK_STEP_IDX);
+                if let Some(edge_cpoly) = get_svg_path_by_id(file_id, &asset_id) { Some(edge_cpoly) }
+                else {
+                    // try obtaining the center asset for this prefix
+                    asset_id = stepped_asset_name(id_prefix, GazeDirection::StraightAhead, 0);
+                    get_svg_path_by_id(file_id,&asset_id)
+                }
+            };
+
+    if let Some(cpoly) = cpoly_opt {
+        let mut raw_fb =
+            RawFrameBuf::<Rgb565, &mut [u8]>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
+        let _ = cpoly.into_styled(*style).draw(&mut raw_fb);
+    }
+    else {
+        warn!("no asset for file {} prefix {} gaze {} step {}", file_id, id_prefix, gaze_direction, look_step_idx);
+    }
 }
 
 /// Lookup the preloaded ClosedPolygon and then draw it into the buffer with the style provided.
@@ -302,7 +319,7 @@ async fn main(spawner: Spawner) {
     info!("Core0 main MSP  = {:#010x}", sp);
 
     // prep for reading mode change events
-    MODE_A_VALUE.store(TestModeA::Meander as u8, Ordering::Relaxed);
+    MODE_A_VALUE.store(TestModeA::VStep as u8, Ordering::Relaxed);
     MODE_B_VALUE.store(GazeDirection::StraightAhead as u8, Ordering::Relaxed);
 
     let mut led = Output::new(p.PIN_25, Level::High);
@@ -357,7 +374,6 @@ async fn main(spawner: Spawner) {
     let dcx1_out = Output::new(dcx1, Level::Low);
     let rst1_out = Output::new(rst1, Level::Low);
 
-    
     embassy_rp::multicore::spawn_core1(p.CORE1, 
         unsafe { core::ptr::addr_of_mut!(CORE1_STACK).as_mut().unwrap() }, //safe because we touch this once
         move || {
@@ -382,8 +398,6 @@ async fn main(spawner: Spawner) {
     let mut main_loop_count: usize = 0;
     let mut rnd_src = embassy_rp::clocks::RoscRng;
 
-    info!("Config done");
-
     let mut brightness_ascending: bool = true;
     let mut old_mode_a_val  = TestModeA::MaxCount;
     let mut old_mode_b_val  = u8::MAX;
@@ -393,6 +407,11 @@ async fn main(spawner: Spawner) {
     let eye_redraw_data_ready_pub = EYE_DATA_READY_CHANNEL.publisher().unwrap();
 
     let mut look_step_idx = 0 ;
+
+    info!("Config done, pause for tasks to start...");
+
+    // allow other tasks to begin
+    Timer::after_millis(500).await;
 
     // Main drawing loop, runs forever
     loop {
@@ -414,16 +433,15 @@ async fn main(spawner: Spawner) {
                     else { Rgb565::CSS_LIME_GREEN };
                 emotion_val = EmotionExpression::Neutral;
                 brightness_percent = 75; brightness_ascending = false;
-                frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
+                frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 4;
                 freeze_gaze_dir = true;
             }
-            TestModeA::HSweep => { 
-                iris_color = Rgb565::CSS_DARK_TURQUOISE ;
+            TestModeA::HSweep | TestModeA::VSweep => { 
+                iris_color = 
+                    if mode_a_val ==  TestModeA::HSweep { Rgb565::CSS_DARK_TURQUOISE } 
+                    else { Rgb565::CSS_GOLDENROD };
                 emotion_val = EmotionExpression::Neutral;
-            }
-            TestModeA::VSweep => {
-                iris_color = Rgb565::CSS_GOLDENROD;
-                emotion_val = EmotionExpression::Neutral;
+                brightness_percent = 75; brightness_ascending = false;
             }
             TestModeA::SurpriseHSweep => {
                 emotion_val = EmotionExpression::Surprise;
@@ -447,7 +465,7 @@ async fn main(spawner: Spawner) {
                 iris_color = Rgb565::CSS_DEEP_SKY_BLUE;
                 emotion_val = EmotionExpression::Neutral;
                 brightness_percent = 75; brightness_ascending = false;
-                frame_render_gap_millis = INTERFRAME_DELAY_MILLIS / 2;
+                frame_render_gap_millis = INTERFRAME_DELAY_MILLIS / 4;
             }
             TestModeA::Randomize => {
                 emotion_val = EmotionExpression::Neutral;
@@ -547,21 +565,42 @@ async fn main(spawner: Spawner) {
         // and passed as atomics. Publish a message to start rendering.
 
         eye_redraw_data_ready_pub.publish(main_loop_count.try_into().unwrap()).await;
+        // info!("data_ready_pub");
 
         led.set_low();
         main_loop_count += 1;
 
         // give some time to inter-task stuff
         Timer::after_millis(frame_render_gap_millis.try_into().unwrap()).await;
-        // wait_for
-        //RIGHT_EYE_DONE_SIGNAL.wait().await;
 
+            // TODO: The below shouldn't be necessary
+        // while !LEFT_EYE_DONE_SIGNAL.signaled() || !RIGHT_EYE_DONE_SIGNAL.signaled() {
+        //     info!("main check signals: left {} right {}", 
+        //         LEFT_EYE_DONE_SIGNAL.signaled(),
+        //         RIGHT_EYE_DONE_SIGNAL.signaled()
+        //     );
+        //     Timer::after_micros(20000).await;
+        // }
+
+        // ensure that left and right eyes are synchronized
+        let left_redraw_count = LEFT_EYE_DONE_SIGNAL.wait().await;
+        let right_redraw_count = RIGHT_EYE_DONE_SIGNAL.wait().await;
+        if right_redraw_count != left_redraw_count {
+            info!("left {} vs right {} redraw_count", left_redraw_count, right_redraw_count);
+        }
+
+            
         bg_dirty = false;
         iris_dirty = false;
 
     }
+
 }
 
+/// convenience for logging / debuggin
+fn debug_tag_for_eye_side(is_left: bool) -> &'static str {
+    if is_left {"left"} else {"right"}
+}
 
 /**
  * Performs the main redrawing for each eye
@@ -569,6 +608,9 @@ async fn main(spawner: Spawner) {
 async fn redraw_loop<T>(is_left: bool, mut backlight_pwm_out:   Pwm<'static>, mut display: RealDisplayType<T>) 
 where T: embassy_rp::spi::Instance
 {
+    let eye_debug_tag = if is_left {"left"} else { "right"};
+    info!("begin {} eye redraw_loop", eye_debug_tag);
+
     // "warm up" the backlight-- this only runs once after a restart
     backlight_pwm_out.set_duty_cycle_percent(25).unwrap();
 
@@ -597,18 +639,17 @@ where T: embassy_rp::spi::Instance
             embassy_sync::pubsub::WaitResult::Lagged(missed_count) => {
                 warn!("Missed {} syncs", missed_count);
             },
-            _ => {}
-            // embassy_sync::pubsub::WaitResult:: Message(redraw_sync_count) => {
-            //     //info!("redraw_sync_count {} ", redraw_sync_count);
-            //     if (redraw_loop_count+1) != redraw_sync_count {
-            //         warn!("loop_count {} redraw_sync_count {}", redraw_loop_count, redraw_sync_count);
-            //     }
-            //  }
+            embassy_sync::pubsub::WaitResult:: Message(redraw_sync_count) => {
+                if redraw_loop_count != redraw_sync_count {
+                    warn!("{} count {} pub count {}", eye_debug_tag, redraw_loop_count, redraw_sync_count);
+                }
+             }
+            // _=> {}
         }
         let loop_start_micros = Instant::now().as_micros();
-
+        // info!("{} eye redraw start ", eye_debug_tag);
   
-          // dim slightly while we start redrawing
+        // dim slightly while we start redrawing
         let dim_light_pct = if last_brightness_pct >= 7 { last_brightness_pct - 7 } else {0};
         backlight_pwm_out.set_duty_cycle_percent(dim_light_pct).unwrap();
 
@@ -671,7 +712,7 @@ where T: embassy_rp::spi::Instance
 
         if iris_dirty || display_dirty  {
             draw_inner_eye_shapes(is_left, gaze_dir, emotion_val, look_step, iris_color, disp_frame_buf);
-            draw_eyeball_overlay_shapes(is_left, gaze_dir, emotion_val, skin_color, disp_frame_buf);
+            draw_eyeball_overlay_shapes(is_left, gaze_dir, emotion_val, look_step, skin_color, disp_frame_buf);
             display_dirty = true;
         }
 
@@ -694,28 +735,26 @@ where T: embassy_rp::spi::Instance
         last_brightness_pct = brightness_percent;
 
         redraw_loop_count += 1;
-        // synchronize left and right eye drawing
-        if is_left {
-            let right_eye_loop_count = RIGHT_EYE_DONE_SIGNAL.wait().await;
-            // This breaks when the debugger is attached, for some reason
-            if right_eye_loop_count != redraw_loop_count {
-                warn!("loop_count left {} != right {}",redraw_loop_count, right_eye_loop_count);
-            }
-        }
-        else {
-            // right eye is done drawing to screen -- notify folks waiting on this
-            RIGHT_EYE_DONE_SIGNAL.signal(redraw_loop_count);
+
+
+        let loop_elapsed_micros = Instant::now().as_micros() - loop_start_micros;
+        loop_elapsed_total += loop_elapsed_micros;
+        if redraw_loop_count % 1000 == 0 {
+            let avg_loop_elapsed = loop_elapsed_total / redraw_loop_count as u64;
+            info!("redraw_loop {} : {} µs",eye_debug_tag, avg_loop_elapsed);
+        } else if redraw_loop_count == 1 {
+            info!("first redraw_loop {} : {} µs",eye_debug_tag, loop_elapsed_micros);
         }
 
-        let _loop_finished_micros = Instant::now().as_micros();
+        // synchronize left and right eye drawing
+        // info!("{} eye signaling...", eye_debug_tag);
         if !is_left {
-            let loop_elapsed_micros = _loop_finished_micros - loop_start_micros;
-            loop_elapsed_total += loop_elapsed_micros;
-            if redraw_loop_count % 1000 == 0 {
-                let avg_loop_elapsed = loop_elapsed_total / redraw_loop_count as u64;
-                info!("redraw_loop {} µs",avg_loop_elapsed);
-            }
+            // right eye is running on a separate core, Core1, and we expect this to finish first
+            RIGHT_EYE_DONE_SIGNAL.signal(redraw_loop_count);
+        } else {
+            LEFT_EYE_DONE_SIGNAL.signal(redraw_loop_count);
         }
+  
     }
 }
 
@@ -745,9 +784,10 @@ fn draw_background_shapes(is_left: bool, _gaze_dir: GazeDirection, _emotion: Emo
     draw_closed_poly(frame_buf, file_id, "eyebrow", &brow_style);
 
     let _elapsed_micros = Instant::now().as_micros() - start_micros;
-    info!("bg redraw {} {}µs", if is_left {"left "} else { "right"}, _elapsed_micros);
+    info!("bg redraw {} {}µs", debug_tag_for_eye_side(is_left), _elapsed_micros);
 
 }
+
 
 
 
@@ -783,12 +823,14 @@ fn draw_inner_eye_shapes(is_left:bool, end_gaze_dir: GazeDirection, _emotion: Em
         if total_runs > 1000 {
             let total_elapsed = total_elapsed + _elapsed_micros;
             let avg_elapsed_micros = total_elapsed / total_runs;
-            info!("inner redraw {}µs", avg_elapsed_micros);
+            info!("{} inner redraw {}µs", debug_tag_for_eye_side(is_left), avg_elapsed_micros);
             // reset benchmarker
             TOTAL_ELAPSED_MICROS.store(_elapsed_micros, Ordering::Relaxed);
             RUN_COUNT.store(1, Ordering::Relaxed);
         }
     }
+
+    // info!("inner redraw {} {}µs", debug_tag_for_eye_side(is_left), _elapsed_micros);
 
 }
 
@@ -805,7 +847,8 @@ fn draw_inner_eye_shapes(is_left:bool, end_gaze_dir: GazeDirection, _emotion: Em
   - bulge bright region
   - infraorbital furrow
  */
-fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:EmotionExpression, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) {
+fn draw_eyeball_overlay_shapes(is_left:bool, 
+    gaze_dir: GazeDirection, _emotion:EmotionExpression, look_step: u8, skin_color:Rgb565, frame_buf: &mut FullFrameBuf) {
     static RUN_COUNT:AtomicUsize = AtomicUsize::new(0);
     static TOTAL_ELAPSED_MICROS:AtomicUsize = AtomicUsize::new(0);
 
@@ -855,13 +898,11 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
     draw_closed_poly(frame_buf, file_id, "lower_lid_bulge_11", &lower_lid_bulge_style);
     draw_closed_poly(frame_buf, file_id, "lower_lid_shine_11", &lower_lid_shine_style);
 
-    // draw the entire upper eyelid "module"
-    draw_closed_poly(frame_buf, file_id, "upper_lid_shadow_11", &upper_lid_shadow_style);
-    // we paint the shine below the lid because we want a line width on top?
-    draw_closed_poly(frame_buf, file_id, "upper_lid_shine_11", &upper_lid_shine_style);
-    draw_closed_poly(frame_buf, file_id, "upper_lid_11", &upper_lid_style);
 
-
+    draw_stepped_asset(frame_buf, file_id, "upper_lid_shadow", gaze_dir, look_step, &upper_lid_shadow_style);
+    // TODO we paint the shine below the lid because we want a line width on top?
+    draw_stepped_asset(frame_buf, file_id, "upper_lid_shine", gaze_dir, look_step, &upper_lid_shine_style);
+    draw_stepped_asset(frame_buf, file_id, "upper_lid_bulge", gaze_dir, look_step, &upper_lid_style);
 
     let _elapsed_micros:usize = (Instant::now().as_micros() - start_micros).try_into().unwrap();
     if !is_left {
@@ -870,12 +911,14 @@ fn draw_eyeball_overlay_shapes(is_left:bool, _gaze_dir: GazeDirection, _emotion:
         if total_runs > 1000 {
             let total_elapsed = total_elapsed + _elapsed_micros;
             let avg_elapsed_micros = total_elapsed / total_runs;
-            info!("overlay redraw {}µs", avg_elapsed_micros);
+            info!("overlay redraw {} {}µs", debug_tag_for_eye_side(is_left), avg_elapsed_micros);
             // reset benchmarker
             TOTAL_ELAPSED_MICROS.store(_elapsed_micros, Ordering::Relaxed);
             RUN_COUNT.store(1, Ordering::Relaxed);
         }
     }
+    // info!("overlay redraw {} {}µs", debug_tag_for_eye_side(is_left), _elapsed_micros);
+
 }
 
 #[embassy_executor::task]

@@ -13,7 +13,7 @@
             "probe": "1209:4853", // for HS-Probe
             // TODO: Does RP235x support connectUnderReset?
             "connectUnderReset": false,
-            "speed": 4000,
+            "speed": 8000,
             "runtimeExecutable": "probe-rs",
             "runtimeArgs": [
                 "dap-server"
