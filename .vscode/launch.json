@@ -6,7 +6,7 @@
             "preLaunchTask": "rust: cargo build",
             "type": "probe-rs-debug",
             "request": "launch",
-            "name": "rp235x-project",
+            "name": "rp235x debug",
             "cwd": "${workspaceFolder}",
             "chip": "rp235x",
             // "probe": "1209:4853:0e0038001450563641333620",
@@ -36,6 +36,31 @@
             "consoleLogLevel": "Debug", //Error, Warn, Info, Debug, Trace
             "wireProtocol": "Swd"
         },
-
+        {
+        "type": "probe-rs-debug",
+        "request": "attach",
+        "name": "probe-rs attach",
+        "cwd": "${workspaceFolder}",
+        //!MODIFY (or remove)
+        "speed": 8000,
+        //!MODIFY
+        "chip": "rp235x",
+        //!MODIFY (or remove)
+        "probe": "1209:4853",
+        "coreConfigs": [
+            {
+            "coreIndex": 0,
+            "programBinary": "target/thumbv8m.main-none-eabihf/debug/eyebulbz_pico2",
+            "svdFile":  "./.vscode/rp235x.svd"
+            }
+        ],
+        "env": {
+            //!MODIFY (or remove)
+            // If you set this variable, check the VSCode console log window for the location of the log file.
+            "RUST_LOG": "info"
+        },
+        // Info, Debug
+        "consoleLogLevel": "Debug"
+        }
     ]
 }

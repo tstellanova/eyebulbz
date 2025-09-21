@@ -15,9 +15,9 @@ DEFMT_LOG = "debug"
 
 # This is the hard-float ABI for Arm mode.
 #
-# The FPU is enabled by default, and float function arguments use FPU
-# registers.
+# The FPU is enabled by default, and float functions use FPU registers.
 [target.thumbv8m.main-none-eabihf]
+
 # Pass some extra options to rustc, some of which get passed on to the linker.
 #
 # * linker argument --nmagic turns off page alignment of sections (which saves
@@ -37,16 +37,21 @@ rustflags = [
 ]
 
 
-# Use picotool for loading.
-#
+
 # Load an elf, skipping unchanged flash sectors, verify it, and execute it
+#
+# picotool option: 
 #runner = "picotool load -u -v -x -t elf"
+#
+# or probe-rs option:
 # --probe 1209:4853:0e0038001450563641333620
 # 16 MHz max SWD speed for rp2350 ?
 # --speed 16000
 runner = "probe-rs run --chip RP235x --protocol swd --speed 8000 "
 
-# This is the soft-float ABI for Arm mode.
+
+
+# This is the soft-float ABI for Arm mode UNTESTED for this project
 #
 # The FPU is disabled by default, and float function arguments use integer
 # registers. Only useful for making the `float_test` example give really bad
@@ -62,13 +67,14 @@ rustflags = [
   "link-arg=-Tdefmt.x",
 ]
 
-# Use picotool for loading.
-#
+
 # Load an elf, skipping unchanged flash sectors, verify it, and execute it
+# 
+# picotool option:
 #runner = "picotool load -u -v -x -t elf"
 runner = "probe-rs run --chip RP235x"
 
-# This is the soft-float ABI for RISC-V mode.
+# This is the soft-float ABI for RISC-V mode. UNTESTED for this project
 #
 # Hazard 3 does not have an FPU and so float function arguments use integer
 # registers.
@@ -92,7 +98,6 @@ rustflags = [
   "link-arg=-Tdefmt.x",
 ]
 
-# Use picotool for loading.
 #
 # Load an elf, skipping unchanged flash sectors, verify it, and execute it
 runner = "picotool load -u -v -x -t elf"

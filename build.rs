@@ -24,8 +24,8 @@ fn main() {
     println!("cargo:rerun-if-changed=rp235x_riscv.x");
 
     // SVG files need special handling because of the proc_macro
-    println!("cargo:rerun-if-changed=img/eyestack-left.svg");
-    println!("cargo:rerun-if-changed=img/eyestack-right.svg");
+    println!("cargo:rerun-if-changed=img/eyestack-left-gen.svg");
+    println!("cargo:rerun-if-changed=img/eyestack-right-gen.svg");
 
     println!("cargo:rerun-if-changed=build.rs");
 }

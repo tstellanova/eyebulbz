@@ -11,6 +11,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 use defmt::{info, warn, Format, unwrap};
 
+use embassy_rp::clocks::ClockConfig;
 use embedded_graphics::primitives::StrokeAlignment;
 
 use core::u8;
@@ -131,8 +132,8 @@ static DISPLAY1_FRAMEBUF: StaticCell<FullFrameBuf> = StaticCell::new();
         
 
 // == Cross-core signaling stuff below
-static MODE_A_VALUE: AtomicU8 = AtomicU8::new(0);
-static MODE_B_VALUE: AtomicU8 = AtomicU8::new(0);
+static CUR_MODE_A: AtomicU8 = AtomicU8::new(0);
+static CUR_MODE_B: AtomicU8 = AtomicU8::new(0);
 static CUR_BRIGHTNESS_PCT: AtomicU8 = AtomicU8::new(50);
 static CUR_IRIS_COLOR: AtomicU16 = AtomicU16::new(0x18ff);
 static CUR_SKIN_COLOR: AtomicU16 = AtomicU16::new(0x000777);  
@@ -282,9 +283,9 @@ async fn mode_a_button_task(mut pin: Input<'static>) {
         Timer::after_millis(PUSHBUTTON_DEBOUNCE_DELAY).await; 
 
         if pin.is_low() {
-            let mut mode_a_val = MODE_A_VALUE.load(Ordering::Relaxed);
+            let mut mode_a_val = CUR_MODE_A.load(Ordering::Relaxed);
             mode_a_val = (mode_a_val + 1) %  TestModeA::MaxCount as u8;
-            MODE_A_VALUE.store(mode_a_val, Ordering::Relaxed);
+            CUR_MODE_A.store(mode_a_val, Ordering::Relaxed);
         }
     }
 }
@@ -299,9 +300,9 @@ async fn mode_b_button_task(mut pin: Input<'static>) {
         Timer::after_millis(PUSHBUTTON_DEBOUNCE_DELAY).await; 
 
         if pin.is_low() {
-            let mut mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
+            let mut mode_b_val = CUR_MODE_B.load(Ordering::Relaxed);
             mode_b_val = (mode_b_val + 1) % MAX_MODE_B_COUNT;
-            MODE_B_VALUE.store(mode_b_val, Ordering::Relaxed);
+            CUR_MODE_B.store(mode_b_val, Ordering::Relaxed);
         }
     }
 }
@@ -310,17 +311,23 @@ async fn mode_b_button_task(mut pin: Input<'static>) {
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // let mut pac = rp235x_pac::Peripherals::take().unwrap();
-    let p = embassy_rp::init(Default::default());
-    let total_fbuf_size = 2*FRAME_SIZE_BYTES ;
-    info!("Start Config total_fbuf_size = {}",total_fbuf_size);
+    const CFG_SYSCLK_HZ:u32 = 200_000_000;
+    let mut embassy_cfg = embassy_rp::config::Config::default();
+    embassy_cfg.clocks = ClockConfig::system_freq(CFG_SYSCLK_HZ)
+        .expect("Failed to configure clock");
+    let core_volts = embassy_cfg.clocks.core_voltage;
+    let p = embassy_rp::init(embassy_cfg);
 
     // Read MSP at runtime
     let sp: u32 = cortex_m::register::msp::read();
     info!("Core0 main MSP  = {:#010x}", sp);
+    let total_fbuf_size = 2*FRAME_SIZE_BYTES ;
+    info!("Start {} mhz core_volts {} total_fbuf_size = {}",CFG_SYSCLK_HZ/1_000_000, core_volts, total_fbuf_size);
+
 
     // prep for reading mode change events
-    MODE_A_VALUE.store(TestModeA::VStep as u8, Ordering::Relaxed);
-    MODE_B_VALUE.store(GazeDirection::StraightAhead as u8, Ordering::Relaxed);
+    CUR_MODE_A.store(TestModeA::Meander as u8, Ordering::Relaxed);
+    CUR_MODE_B.store(GazeDirection::StraightAhead as u8, Ordering::Relaxed);
 
     let mut led = Output::new(p.PIN_25, Level::High);
 
@@ -416,8 +423,8 @@ async fn main(spawner: Spawner) {
     // Main drawing loop, runs forever
     loop {
         led.set_high();
-        let mode_a_val: TestModeA = MODE_A_VALUE.load(Ordering::Relaxed).try_into().unwrap();
-        let mode_b_val = MODE_B_VALUE.load(Ordering::Relaxed);
+        let mode_a_val: TestModeA = CUR_MODE_A.load(Ordering::Relaxed).try_into().unwrap();
+        let mode_b_val = CUR_MODE_B.load(Ordering::Relaxed);
         let mut brightness_percent = CUR_BRIGHTNESS_PCT.load(Ordering::Relaxed);
         let mut frame_render_gap_millis = INTERFRAME_DELAY_MILLIS;
         let iris_color: Rgb565;
@@ -629,6 +636,7 @@ where T: embassy_rp::spi::Instance
     let mut last_emotion_val = EmotionExpression::MaxCount;
 
     let mut redraw_loop_count: usize = 0;
+    let mut recent_redraw_loop_count: usize = 0;
     let mut loop_elapsed_total: u64 = 0;
     let mut last_brightness_pct: u8 = 25;
 
@@ -735,13 +743,16 @@ where T: embassy_rp::spi::Instance
         last_brightness_pct = brightness_percent;
 
         redraw_loop_count += 1;
-
+        recent_redraw_loop_count += 1;
 
         let loop_elapsed_micros = Instant::now().as_micros() - loop_start_micros;
         loop_elapsed_total += loop_elapsed_micros;
-        if redraw_loop_count % 1000 == 0 {
-            let avg_loop_elapsed = loop_elapsed_total / redraw_loop_count as u64;
+        if recent_redraw_loop_count % 100 == 0 {
+            let avg_loop_elapsed = loop_elapsed_total / recent_redraw_loop_count as u64;
             info!("redraw_loop {} : {} µs",eye_debug_tag, avg_loop_elapsed);
+            // reset recents
+            recent_redraw_loop_count = 1;
+            loop_elapsed_total = loop_elapsed_micros;
         } else if redraw_loop_count == 1 {
             info!("first redraw_loop {} : {} µs",eye_debug_tag, loop_elapsed_micros);
         }
