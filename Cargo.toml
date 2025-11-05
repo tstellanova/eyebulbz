@@ -21,7 +21,7 @@ embassy-rp = { version = "0.7.0",  features = ["defmt", "unstable-pac", "time-dr
 embedded-graphics = "0.8.1"
 lcd-async = "0.1.1"
 tinyqoi = "0.2.0"
-
+u8g2-fonts = "0.7.2"
 
 rand = {version="0.9",default-features = false }
 static_cell = { version = "2.1.1" }

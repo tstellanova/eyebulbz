@@ -50,6 +50,13 @@ use tinyqoi::Qoi;
 use num_enum::TryFromPrimitive;
 
 
+use u8g2_fonts::{
+    fonts::u8g2_font_inr53_mr,
+    FontRenderer, 
+    types::{FontColor, HorizontalAlignment, VerticalPosition}
+};
+
+
 // example/src/main.rs
 use closed_svg_path_proc::import_svg_paths;
 use closed_svg_path::{ClosedPolygon,ScanlineIntersections};
@@ -139,6 +146,7 @@ static CUR_IRIS_COLOR: AtomicU16 = AtomicU16::new(0x18ff);
 static CUR_SKIN_COLOR: AtomicU16 = AtomicU16::new(0x000777);  
 static CUR_LOOK_STEP: AtomicU8 = AtomicU8::new(0);
 static CUR_BG_DIRTY: AtomicBool = AtomicBool::new(true);
+static CUR_FUNTEXT_SHOW: AtomicBool = AtomicBool::new(false);
 static CUR_IRIS_DIRTY: AtomicBool = AtomicBool::new(true);
 static CUR_EMOTION: AtomicU8 = AtomicU8::new(EmotionExpression::Neutral as u8);
 static CUR_GAZE_DIR: AtomicU8 = AtomicU8::new(GazeDirection::StraightAhead as u8);
@@ -149,11 +157,14 @@ static LEFT_EYE_DONE_SIGNAL: Signal<CriticalSectionRawMutex, usize> = Signal::ne
 static RIGHT_EYE_DONE_SIGNAL: Signal<CriticalSectionRawMutex, usize> = Signal::new();
 
 
-static NEUTRAL_EYEBG_BYTES: &[u8] = include_bytes!("../img/gradient_bg.qoi");
+static MAIN_FONT: FontRenderer = FontRenderer::new::<u8g2_font_inr53_mr>();
+
+
+// static NEUTRAL_EYEBG_BYTES: &[u8] = include_bytes!("../img/gradient_bg.qoi");
 const fn get_emotion_bg_bytes(emotion: EmotionExpression, is_left: bool) -> Option<&'static [u8]> {
     match (is_left, emotion) {
         // (true, EmotionExpression::Neutral) => Some(NEUTRAL_EYEBG_BYTES),
-        (false, EmotionExpression::Neutral) => Some(NEUTRAL_EYEBG_BYTES),
+        // (false, EmotionExpression::Neutral) => Some(NEUTRAL_EYEBG_BYTES),
         // (true, EmotionExpression::Surprise) => Some(include_bytes!("../img/eyebg-left-surprise.qoi")),
         // (false, EmotionExpression::Surprise) => Some(include_bytes!("../img/eyebg-right-surprise.qoi")),
         _ => None
@@ -373,8 +384,7 @@ async fn main(spawner: Spawner) {
         Spi::new_txonly(p.SPI0, sck0, sda0, p.DMA_CH0, display_config.clone());
     let dcx0_out = Output::new(dcx0, Level::Low);
     let rst0_out = Output::new(rst0, Level::Low);
-    // let bl0_pwm_out: Pwm<'_> = Pwm::new_output_b(p.PWM_SLICE3, bl0, pwm::Config::default());//TODO doesn't work?
-    let bl0_pwm_out: Pwm<'_> = Pwm::new_output_a(p.PWM_SLICE0, bl0, pwm::Config::default());//TODO doesn't work?
+    let bl0_pwm_out: Pwm<'_> = Pwm::new_output_a(p.PWM_SLICE0, bl0, pwm::Config::default());
 
     let spi1: Spi<'_, embassy_rp::peripherals::SPI1, Async> = 
         Spi::new_txonly(p.SPI1, sck1, sda1, p.DMA_CH1, display_config.clone());
@@ -382,7 +392,7 @@ async fn main(spawner: Spawner) {
     let rst1_out = Output::new(rst1, Level::Low);
 
     embassy_rp::multicore::spawn_core1(p.CORE1, 
-        unsafe { core::ptr::addr_of_mut!(CORE1_STACK).as_mut().unwrap() }, //safe because we touch this once
+        unsafe { core::ptr::addr_of_mut!(CORE1_STACK).as_mut().unwrap() }, //safe because we only touch this once, here
         move || {
             let executor1 = EXECUTOR1.init(Executor::new());
             let bl1_pwm_out: Pwm<'static> = Pwm::new_output_b(p.PWM_SLICE7, bl1, pwm::Config::default());
@@ -408,6 +418,7 @@ async fn main(spawner: Spawner) {
     let mut brightness_ascending: bool = true;
     let mut old_mode_a_val  = TestModeA::MaxCount;
     let mut old_mode_b_val  = u8::MAX;
+    let mut old_show_funtext_val = false;
     let mut emotion_val; // = EmotionExpression::Neutral ;
     let mut cur_gaze_dir = GazeDirection::StraightAhead;
 
@@ -420,7 +431,7 @@ async fn main(spawner: Spawner) {
     // allow other tasks to begin
     Timer::after_millis(500).await;
 
-    // Main drawing loop, runs forever
+    // Main drawing loop: runs forever
     loop {
         led.set_high();
         let mode_a_val: TestModeA = CUR_MODE_A.load(Ordering::Relaxed).try_into().unwrap();
@@ -458,7 +469,11 @@ async fn main(spawner: Spawner) {
                 skin_color = Rgb565::CSS_ORANGE;
             }
             TestModeA::Meander => {
-                iris_color = hex_to_rgb565(0x405D80); 
+                // skin color: bright lime: A6F527
+                // eyelid color: bright pink: F0AAF0
+                // iris_color = hex_to_rgb565(0x405D80); // like a dark slate blue
+                iris_color = Rgb565::CSS_DEEP_SKY_BLUE;
+                skin_color = Rgb565::CSS_LIME_GREEN;
                 emotion_val = EmotionExpression::Neutral;
                 brightness_percent = 75; brightness_ascending = false;
             }
@@ -495,6 +510,23 @@ async fn main(spawner: Spawner) {
             info!("mode_b old: {} new: {}", old_mode_b_val, mode_b_val);
             iris_dirty = true;
             old_mode_b_val = mode_b_val;
+        }
+
+        let show_funtext: bool;
+        if main_loop_count % 20 == 0 {
+            show_funtext = true;
+        }
+        else {
+            show_funtext = false;
+        }
+
+        if old_show_funtext_val != show_funtext {
+            info!("show_funtext old: {} new: {}", old_show_funtext_val, show_funtext);
+
+            if !show_funtext {
+                bg_dirty = true;
+            }
+            old_show_funtext_val = show_funtext;
         }
 
         if !freeze_gaze_dir {
@@ -557,6 +589,8 @@ async fn main(spawner: Spawner) {
             }
         }
 
+
+
         // ship all the redraw config values
         // info!("emote: {} gaze: {} look_step: {}", emotion_val, cur_gaze_dir, look_step_idx);
         CUR_GAZE_DIR.store(cur_gaze_dir as u8, Ordering::Relaxed);
@@ -566,6 +600,7 @@ async fn main(spawner: Spawner) {
         CUR_SKIN_COLOR.store(skin_color.into_storage(), Ordering::Relaxed);
         CUR_IRIS_DIRTY.store(iris_dirty, Ordering::Relaxed);
         CUR_BG_DIRTY.store(bg_dirty, Ordering::Relaxed);
+        CUR_FUNTEXT_SHOW.store(show_funtext, Ordering::Relaxed);
         CUR_BRIGHTNESS_PCT.store(brightness_percent, Ordering::Relaxed);
 
         // At this point, all of the config data points required to re-render the frame have been calculated
@@ -666,6 +701,7 @@ where T: embassy_rp::spi::Instance
 
         let bg_dirty = CUR_BG_DIRTY.load(Ordering::Relaxed);
         let iris_dirty = CUR_IRIS_DIRTY.load(Ordering::Relaxed);
+        let show_funtext = CUR_FUNTEXT_SHOW.load(Ordering::Relaxed);
         let emotion_val: EmotionExpression = CUR_EMOTION.load(Ordering::Relaxed).try_into().unwrap();
         let gaze_dir: GazeDirection = CUR_GAZE_DIR.load(Ordering::Relaxed).try_into().unwrap();
         let look_step: u8 = CUR_LOOK_STEP.load(Ordering::Relaxed);
@@ -712,9 +748,15 @@ where T: embassy_rp::spi::Instance
                 let mut raw_fb =
                     RawFrameBuf::<Rgb565, &mut [u8]>::new(disp_frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
                 let _ = raw_fb.clear(skin_color); 
+
             }
 
             draw_background_shapes(is_left, gaze_dir, emotion_val, skin_color, disp_frame_buf);
+            display_dirty = true;
+        }
+
+        if show_funtext {
+            draw_funtime_text(disp_frame_buf);
             display_dirty = true;
         }
 
@@ -770,6 +812,26 @@ where T: embassy_rp::spi::Instance
 }
 
 
+fn draw_funtime_text( frame_buf: &mut FullFrameBuf)
+{
+    let text = "KNOWER";
+
+    let mut raw_fb =
+        RawFrameBuf::<Rgb565, &mut [u8]>::new(frame_buf.as_mut_slice(), DISPLAY_WIDTH as usize, DISPLAY_HEIGHT as usize);
+
+    // Render the text at position (10, 50)
+    let _ = MAIN_FONT.render_aligned(
+        text,
+        Point::new((DISPLAY_WIDTH/2).into(), (DISPLAY_HEIGHT/4).into()),
+        VerticalPosition::Baseline,
+        HorizontalAlignment::Center,
+        FontColor::Transparent(Rgb565::CSS_LIGHT_BLUE),
+        // FontColor::Transparent(Rgb565::CSS_OLIVE_DRAB),
+        &mut raw_fb,
+    ); 
+    
+}
+
 fn draw_background_shapes(is_left: bool, _gaze_dir: GazeDirection, _emotion: EmotionExpression, _skin_color:Rgb565, frame_buf: &mut FullFrameBuf) 
 {
     let start_micros = Instant::now().as_micros();
@@ -786,6 +848,7 @@ fn draw_background_shapes(is_left: bool, _gaze_dir: GazeDirection, _emotion: Emo
         .stroke_color(Rgb565::BLACK)
         .build();
         
+
     if is_left {
         // TODO ensure that this ellipse is also reflected correctly on right eye
         draw_closed_poly(frame_buf, file_id, "grande_ellipse", &test_ellipse_style);
@@ -866,7 +929,7 @@ fn draw_eyeball_overlay_shapes(is_left:bool,
     let start_micros = Instant::now().as_micros();
     let file_id = if is_left { SvgFileId::EyeLeft } else { SvgFileId::EyeRight };
 
-    let upper_lid_skin = hex_to_rgb565(0x73369a); //TODO get this custom color elsewhere
+    let upper_lid_skin = hex_to_rgb565(0xBD11BD); //0x73369a); //TODO get this custom color elsewhere //0xf0aaf0); //
     let upper_lid_shine_color= adjust_lightness_rgb565(upper_lid_skin, FACTOR_BRIGHTEN_20);
     let upper_lid_skin_darker = adjust_lightness_rgb565(upper_lid_skin, FACTOR_DARKEN_30);
 
@@ -885,7 +948,7 @@ fn draw_eyeball_overlay_shapes(is_left:bool,
         .build();
 
     let upper_lid_shadow_style = PrimitiveStyleBuilder::new()
-        .fill_color(hex_to_rgb565(0x1d1c4f))
+        .fill_color(hex_to_rgb565(0x1d1c4f)) // TODO alternative color source
         .build();
 
     let lower_lid_bulge_style = PrimitiveStyleBuilder::new()
@@ -904,8 +967,8 @@ fn draw_eyeball_overlay_shapes(is_left:bool,
     // if emotion == EmotionExpression::Surprise { //TODO handle emotions differently
 
     // draw the entire lower eyelid "module"
-    draw_closed_poly(frame_buf, file_id, "outer_corner_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x24102f))); // TODO
-    draw_closed_poly(frame_buf, file_id, "inner_corner_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x24102f))); // TODO
+    draw_closed_poly(frame_buf, file_id, "outer_corner_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x24102f))); // TODO alt color source
+    draw_closed_poly(frame_buf, file_id, "inner_corner_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x24102f))); // TODO alt color source
     draw_closed_poly(frame_buf, file_id, "lower_lid_bulge_11", &lower_lid_bulge_style);
     draw_closed_poly(frame_buf, file_id, "lower_lid_shine_11", &lower_lid_shine_style);
 
