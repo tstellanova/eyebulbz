@@ -127,6 +127,9 @@ const IRIS_PALETTE_PURPLE: [Rgb565; 8] = [
 
 ];
 
+const MAX_BRIGHTNESS_PCT: u8 = 75;
+const MIN_BRIGHTNESS_PCT: u8 = 5;
+const STEP_BRIGHTNESS_PCT: u8 = 2;
 
 
 #[link_section = ".core1_stack"]
@@ -337,7 +340,7 @@ async fn main(spawner: Spawner) {
 
 
     // prep for reading mode change events
-    CUR_MODE_A.store(TestModeA::Meander as u8, Ordering::Relaxed);
+    CUR_MODE_A.store(TestModeA::SlowRandMeander as u8, Ordering::Relaxed);
     CUR_MODE_B.store(GazeDirection::StraightAhead as u8, Ordering::Relaxed);
 
     let mut led = Output::new(p.PIN_25, Level::High);
@@ -421,6 +424,7 @@ async fn main(spawner: Spawner) {
     let mut old_show_funtext_val = false;
     let mut emotion_val; // = EmotionExpression::Neutral ;
     let mut cur_gaze_dir = GazeDirection::StraightAhead;
+    let mut default_color_mode = true;
 
     let eye_redraw_data_ready_pub = EYE_DATA_READY_CHANNEL.publisher().unwrap();
 
@@ -469,19 +473,23 @@ async fn main(spawner: Spawner) {
                 skin_color = Rgb565::CSS_ORANGE;
             }
             TestModeA::Meander => {
-                // skin color: bright lime: A6F527
-                // eyelid color: bright pink: F0AAF0
-                // iris_color = hex_to_rgb565(0x405D80); // like a dark slate blue
                 iris_color = Rgb565::CSS_DEEP_SKY_BLUE;
                 skin_color = Rgb565::CSS_LIME_GREEN;
                 emotion_val = EmotionExpression::Neutral;
-                brightness_percent = 75; brightness_ascending = false;
             }
             TestModeA::SlowRandMeander => {
-                iris_color = Rgb565::CSS_CHOCOLATE;
-                emotion_val = EmotionExpression::Neutral;
-                brightness_percent = 75; brightness_ascending = false;
-                frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
+                if default_color_mode {
+                    frame_render_gap_millis = INTERFRAME_DELAY_MILLIS * 2;
+                    iris_color = Rgb565::CSS_DEEP_SKY_BLUE;
+                    skin_color = Rgb565::CSS_LIME_GREEN;
+                    emotion_val = EmotionExpression::Neutral;
+                }
+                else  {
+                    let color_idx = main_loop_count % IRIS_PALETTE_PURPLE.len();
+                    iris_color = IRIS_PALETTE_PURPLE[color_idx] ;
+                    skin_color = Rgb565::CSS_ORANGE;
+                    emotion_val = EmotionExpression::Surprise;
+                }
             }
             TestModeA::ClockStar => {
                 iris_color = Rgb565::CSS_DEEP_SKY_BLUE;
@@ -512,20 +520,21 @@ async fn main(spawner: Spawner) {
             old_mode_b_val = mode_b_val;
         }
 
-        let show_funtext: bool;
-        if main_loop_count % 20 == 0 {
-            show_funtext = true;
+        let mut show_funtext: bool = old_show_funtext_val;
+
+        let rand_fun = embassy_rp::clocks::RoscRng::next_u8();
+        if rand_fun < 64  {
+            // 25% of the time, flip the funtext value
+            show_funtext = !show_funtext;
         }
-        else {
-            show_funtext = false;
+        else if rand_fun > 191 {
+            //switch color modes
+            default_color_mode = ! default_color_mode;
         }
 
         if old_show_funtext_val != show_funtext {
-            info!("show_funtext old: {} new: {}", old_show_funtext_val, show_funtext);
-
-            if !show_funtext {
-                bg_dirty = true;
-            }
+            // info!("show_funtext old: {} new: {}", old_show_funtext_val, show_funtext);
+            bg_dirty = true;
             old_show_funtext_val = show_funtext;
         }
 
@@ -544,8 +553,11 @@ async fn main(spawner: Spawner) {
                     GazeDirection::gaze_and_look_for_meander(main_loop_count)
                 }
                 TestModeA::SlowRandMeander | TestModeA::Randomize => {
-                    let rand_count = embassy_rp::clocks::RoscRng::next_u8();
-                    GazeDirection::gaze_and_look_for_meander(rand_count as usize)
+                    match emotion_val {
+                        EmotionExpression::Neutral => GazeDirection::gaze_and_look_for_meander(main_loop_count),
+                        EmotionExpression::Surprise => GazeDirection::gaze_and_look_for_tribox(main_loop_count),
+                        _ => { unreachable!( )}
+                    }
                 }
                 _ => { unreachable!() }
             };
@@ -569,19 +581,19 @@ async fn main(spawner: Spawner) {
         //  100 / (10000 / frame_render_gap_millis);
         let brightstep_pct_raw =  100*frame_render_gap_millis / 5000; //fade pwm over this interval
         // info!("intergap_ms: {} brightstep_pct_raw: {} ",frame_render_gap_millis, brightstep_pct_raw);
-        let brightstep_pct: u8 = u8::max(brightstep_pct_raw.try_into().unwrap(), 1); //fade pwm over this interval
+        let brightstep_pct: u8 = u8::max(brightstep_pct_raw.try_into().unwrap(), STEP_BRIGHTNESS_PCT); //fade pwm over this interval
         // info!("brightstep_pct: {}", brightstep_pct);
 
         if brightness_ascending {
             brightness_percent += brightstep_pct;
-            if brightness_percent >= 100 {
-                brightness_percent = 100;
+            if brightness_percent >= MAX_BRIGHTNESS_PCT {
+                brightness_percent = MAX_BRIGHTNESS_PCT;
                 brightness_ascending = false;
             }
         }
         else {
-            if brightness_percent < brightstep_pct { 
-                brightness_percent = 5;
+            if brightness_percent < MIN_BRIGHTNESS_PCT { 
+                brightness_percent = MIN_BRIGHTNESS_PCT;
                 brightness_ascending = true; 
             }
             else {
@@ -756,7 +768,13 @@ where T: embassy_rp::spi::Instance
         }
 
         if show_funtext {
-            draw_funtime_text(disp_frame_buf);
+            let text_color = match emotion_val {
+                EmotionExpression::Surprise => Rgb565::CSS_ALICE_BLUE, 
+                EmotionExpression::Neutral => Rgb565::CSS_ORANGE,
+                _=> { unreachable!() }
+            };
+
+            draw_funtime_text(disp_frame_buf, text_color);
             display_dirty = true;
         }
 
@@ -812,7 +830,7 @@ where T: embassy_rp::spi::Instance
 }
 
 
-fn draw_funtime_text( frame_buf: &mut FullFrameBuf)
+fn draw_funtime_text( frame_buf: &mut FullFrameBuf, text_color: Rgb565)
 {
     let text = "KNOWER";
 
@@ -825,7 +843,7 @@ fn draw_funtime_text( frame_buf: &mut FullFrameBuf)
         Point::new((DISPLAY_WIDTH/2).into(), (DISPLAY_HEIGHT/4).into()),
         VerticalPosition::Baseline,
         HorizontalAlignment::Center,
-        FontColor::Transparent(Rgb565::CSS_LIGHT_BLUE),
+        FontColor::Transparent(text_color),
         // FontColor::Transparent(Rgb565::CSS_OLIVE_DRAB),
         &mut raw_fb,
     ); 
@@ -964,7 +982,6 @@ fn draw_eyeball_overlay_shapes(is_left:bool,
         .stroke_alignment(StrokeAlignment::Center)
         .build();
  
-    // if emotion == EmotionExpression::Surprise { //TODO handle emotions differently
 
     // draw the entire lower eyelid "module"
     draw_closed_poly(frame_buf, file_id, "outer_corner_11", &PrimitiveStyle::with_fill(hex_to_rgb565(0x24102f))); // TODO alt color source

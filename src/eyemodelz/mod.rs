@@ -117,6 +117,27 @@ impl GazeDirection {
         GazeDirection::North,
     ];
 
+    pub const TRIBOX_ORDER: [GazeDirection; 18] = [
+        GazeDirection::NorthWest,
+        GazeDirection::NorthWest,
+        GazeDirection::North,
+        GazeDirection::NorthEast,
+        GazeDirection::NorthEast,
+        GazeDirection::NorthWest,
+        GazeDirection::NorthWest,
+        GazeDirection::StraightAhead,
+        GazeDirection::StraightAhead,
+        GazeDirection::SouthEast,
+        GazeDirection::SouthEast,
+        GazeDirection::South,
+        GazeDirection::SouthWest,
+        GazeDirection::SouthWest,
+        GazeDirection::SouthEast,
+        GazeDirection::SouthEast,
+        GazeDirection::StraightAhead,
+        GazeDirection::StraightAhead,
+    ];
+
     pub const CARDINAL_HSWEEP_ORDER: [GazeDirection; 2] = [
         GazeDirection::West,
         GazeDirection::East,
@@ -150,6 +171,15 @@ impl GazeDirection {
     /// Given a raw monotonically increasing counter, sweep through each row in a meandering order
     pub fn gaze_and_look_for_meander(mono_count: usize) -> (GazeDirection, u8) {
         Self::gaze_and_step_for_arm_order(mono_count, &GazeDirection::CARDINAL_H8_ORDER)
+    }
+
+    /// Given a raw monotonically increasing counter, sweep through each row in a meandering order
+    pub fn gaze_and_look_for_tribox(mono_count: usize) -> (GazeDirection, u8) {
+        // Self::gaze_and_step_for_arm_order(mono_count, &GazeDirection::TRIBOX_ORDER)
+
+        let arm_order = GazeDirection::TRIBOX_ORDER;
+        let offset = mono_count % arm_order.len();
+        return (arm_order[offset], 3)
     }
 
     /// Given a monotonically increasing counter, return a valid GazeDirection and
